@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
+import research_run
 from research_workflow import WorkflowError, company_research_plan, prepare_thesis_update, thesis_diff
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -632,15 +633,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     research = subparsers.add_parser("research")
     research_subparsers = research.add_subparsers(dest="research_command", required=True)
-    research_plan = research_subparsers.add_parser("plan")
-    research_plan.add_argument("--security", required=True)
-    research_plan.add_argument("--thscode", required=True)
-    research_plan.add_argument("--as-of", required=True)
-    research_plan.add_argument("--latest-report", required=True)
-    research_plan.add_argument(
-        "--provider-mode", choices=["auto", "required", "disabled"], default="auto"
-    )
-    research_plan.add_argument("--json", action="store_true")
+    for name in ("plan", "init"):
+        research_command = research_subparsers.add_parser(name)
+        research_command.add_argument("--security", required=True)
+        research_command.add_argument("--thscode", required=True)
+        research_command.add_argument("--as-of", required=True)
+        research_command.add_argument("--latest-report", required=True)
+        research_command.add_argument(
+            "--provider-mode", choices=["auto", "required", "disabled"], default="auto"
+        )
+        if name == "init":
+            location = research_command.add_mutually_exclusive_group()
+            location.add_argument("--workspace", type=Path)
+            location.add_argument("--output-root", type=Path)
+        research_command.add_argument("--json", action="store_true")
+    research_collect = research_subparsers.add_parser("collect")
+    research_collect.add_argument("--workspace", required=True, type=Path)
+    research_collect.add_argument("--resume", action="store_true")
+    research_collect.add_argument("--json", action="store_true")
+    research_import = research_subparsers.add_parser("import-official")
+    research_import.add_argument("--workspace", required=True, type=Path)
+    research_import.add_argument("--source-id", required=True)
+    research_import.add_argument("--file", required=True, type=Path)
+    research_import.add_argument("--url", required=True)
+    research_import.add_argument("--title")
+    research_import.add_argument("--retrieved-on")
+    research_import.add_argument("--json", action="store_true")
+    for name in ("status", "finalize"):
+        research_command = research_subparsers.add_parser(name)
+        research_command.add_argument("--workspace", required=True, type=Path)
+        research_command.add_argument("--json", action="store_true")
 
     thesis = subparsers.add_parser("thesis")
     thesis_subparsers = thesis.add_subparsers(dest="thesis_command", required=True)
@@ -662,6 +684,13 @@ def doctor_payload() -> dict[str, Any]:
         credential = load_fuyao_credential()
     except MoneyCraftError as exc:
         credential_error = exc
+    research_output_error: research_run.ResearchRunError | None = None
+    try:
+        research_output_root, research_output_source = research_run.output_root()
+    except research_run.ResearchRunError as exc:
+        research_output_error = exc
+        research_output_root = None
+        research_output_source = None
     return {
         "schema": "money-craft.doctor.v1",
         "version": VERSION,
@@ -687,6 +716,22 @@ def doctor_payload() -> dict[str, Any]:
                     "message": sanitize_message(credential_error),
                 }
                 if credential_error and credential_error.kind != "missing_configuration"
+                else None
+            ),
+            "network_checked": False,
+        },
+        "research_output": {
+            "root": str(research_output_root) if research_output_root else None,
+            "configuration_source": research_output_source,
+            "environment_variable": research_run.OUTPUT_ROOT_ENV,
+            "exists": research_output_root.is_dir() if research_output_root else False,
+            "valid": research_output_error is None,
+            "configuration_error": (
+                {
+                    "kind": research_output_error.kind,
+                    "message": sanitize_message(research_output_error),
+                }
+                if research_output_error
                 else None
             ),
             "network_checked": False,
@@ -751,6 +796,14 @@ Official facts change.
         if plan["latest_annual_period"] != "2025-4" or len(plan["provider_operations"]) != 14:
             raise AssertionError("company research plan fixture failed")
         checks.append("company-research-plan")
+        case = research_run.derived_case(plan, "0" * 64)
+        if len(case["operations"]) != 14 or [item["id"] for item in case["official_sources"]] != [
+            "S11",
+            "S12",
+            "S13",
+        ]:
+            raise AssertionError("research run case derivation failed")
+        checks.append("research-run-case")
     except Exception as exc:
         errors.append(sanitize_message(exc))
     return {
@@ -924,18 +977,69 @@ def research_provider(mode: str) -> dict[str, Any]:
 
 
 def run_research(args: argparse.Namespace) -> int:
-    if args.research_command != "plan":
+    try:
+        if args.research_command in {"plan", "init"}:
+            plan = company_research_plan(
+                security=args.security,
+                thscode=args.thscode,
+                as_of=args.as_of,
+                latest_report=args.latest_report,
+                provider=research_provider(args.provider_mode),
+            )
+            if args.research_command == "plan":
+                result = plan
+            else:
+                run_id = None
+                workspace = args.workspace
+                if workspace is None:
+                    workspace, run_id = research_run.allocate_default_workspace(
+                        plan,
+                        root=args.output_root,
+                    )
+                result = research_run.initialize_workspace(
+                    workspace,
+                    plan,
+                    template_root=SKILL_ROOT / "templates",
+                    run_id=run_id,
+                )
+            print_json(result)
+            return 0
+        if args.research_command == "collect":
+            _root, plan, _case, _state = research_run.load_workspace(args.workspace)
+            if plan.get("provider", {}).get("mode") == "disabled":
+                raise WorkflowError("provider_disabled", "research workspace explicitly disables the Fuyao provider")
+            try:
+                load_fuyao_credential()
+            except MoneyCraftError as exc:
+                raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
+            result = research_run.collect_workspace(
+                args.workspace,
+                runtime=Path(__file__).resolve(),
+                resume=args.resume,
+            )
+            print_json(result)
+            return 0 if result["valid"] else EXIT_PROVIDER
+        if args.research_command == "import-official":
+            result = research_run.import_official_source(
+                args.workspace,
+                source_id=args.source_id,
+                source_file=args.file,
+                url=args.url,
+                title=args.title,
+                retrieved_on=args.retrieved_on,
+            )
+            print_json(result)
+            return 0
+        if args.research_command == "status":
+            print_json(research_run.research_status(args.workspace))
+            return 0
+        if args.research_command == "finalize":
+            result = research_run.finalize_workspace(args.workspace)
+            print_json(result)
+            return 0 if result["valid"] else EXIT_PROVIDER
         raise WorkflowError("unsupported_workflow", "unsupported research command")
-    print_json(
-        company_research_plan(
-            security=args.security,
-            thscode=args.thscode,
-            as_of=args.as_of,
-            latest_report=args.latest_report,
-            provider=research_provider(args.provider_mode),
-        )
-    )
-    return 0
+    except research_run.ResearchRunError as exc:
+        raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
 
 
 def run_thesis(args: argparse.Namespace) -> int:

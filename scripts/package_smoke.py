@@ -153,6 +153,52 @@ def smoke(package: Path) -> dict[str, Any]:
             if code or not isinstance(payload, dict) or payload.get("runtime_valid") is not True:
                 raise ValueError(f"installed runtime self-test failed: {output}")
             checks.extend(["atomic-install", "installed-runtime-self-test"])
+            research_workspace = temp / "research-run"
+            code, payload, output = run_json(
+                [
+                    sys.executable,
+                    str(installed / "scripts" / "money_craft.py"),
+                    "research",
+                    "init",
+                    "--security",
+                    "Example Company",
+                    "--thscode",
+                    "000333.SZ",
+                    "--as-of",
+                    "2026-08-23",
+                    "--latest-report",
+                    "2026-1",
+                    "--provider-mode",
+                    "disabled",
+                    "--workspace",
+                    str(research_workspace),
+                    "--json",
+                ],
+                temp,
+            )
+            if code or not isinstance(payload, dict) or payload.get("schema") != "money-craft.research-init.v1":
+                raise ValueError(f"installed research init failed: {output}")
+            code, payload, output = run_json(
+                [
+                    sys.executable,
+                    str(installed / "scripts" / "money_craft.py"),
+                    "research",
+                    "status",
+                    "--workspace",
+                    str(research_workspace),
+                    "--json",
+                ],
+                temp,
+            )
+            if (
+                code
+                or not isinstance(payload, dict)
+                or payload.get("schema") != "money-craft.research-status.v1"
+                or payload.get("network_used_by_status") is not False
+                or len(payload.get("missing_sources", [])) != 17
+            ):
+                raise ValueError(f"installed research status failed: {output}")
+            checks.append("installed-research-run-smoke")
     except (OSError, ValueError, tarfile.TarError, json.JSONDecodeError) as exc:
         errors.append(str(exc))
     return {

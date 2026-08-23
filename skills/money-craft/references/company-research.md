@@ -11,6 +11,18 @@
 
 `research plan` 是可重复的执行规格，不是研究结果。它不访问网络，不证明 Provider 数据存在，也不能替代实际来源捕获、计算和审计。
 
+## 可恢复研究运行
+
+需要落地研究时，使用 `research init` 将 plan 固化到本地 workspace。`case.json` 必须由 `plan.json` 自动派生；不得另写一份 Provider 操作列表。workspace 的状态真源包括不可变 plan、派生 case、append-only `run-state.json`、私有 `evidence/`、报告、论文、审计和完成收据。
+
+1. `research collect --resume` 只执行 case 内有界操作，已有 normalized response 和 capture 不覆盖；单项失败形成显式 Provider gap，并返回非零结果。
+2. `research import-official` 逐项导入 plan 声明的 `S11/S12/S13`，校验 PDF/HTML、HTTPS 来源、大小和 SHA-256；不负责联网下载。
+3. `research status` 离线重算每一阶段，列出 missing sources 和 provider gaps；文件存在不等于阶段完成。
+4. 报告和 thesis 写完后运行 `research finalize`。它生成 metadata-only manifest 和四项 audit artifact；只有身份、证据、report、thesis 与计算全部有效时才产生 completion receipt。
+5. 收据绑定 plan、case、manifest、报告、论文和审计文件哈希。收据之后任一绑定文件变化都必须显示 stale，不得继续宣称完成。
+
+默认 workspace 位于 `~/Documents/sixseven/money/<ticker>-<company>/<as_of>/.research/<run-id>/`；`MONEY_CRAFT_OUTPUT_ROOT` 和 `--output-root` 可改变根目录，显式 `--workspace` 可完全覆盖。必须复用 `init` 返回的动态路径，不使用 `latest` 软链接或共享可变目录。`.research` 仅是 Money Craft 私有研究态，不得伪装成正式档案；完成正式投资账本、审计、离线 verifier 和 seal 后，准出真源才位于同一公司/日期下的 `revisions/rNNNN/`。任何凭据、原始 Provider payload、下载公告或网页快照都不得进入 Git。
+
 ## 研究顺序
 
 1. **资料与偏见**：评级资料可得性，写出市场共识和最可能的共识陷阱。

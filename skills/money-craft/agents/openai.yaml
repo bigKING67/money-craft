@@ -1,4 +1,4 @@
 interface:
   display_name: "Money Craft"
   short_description: "Evidence-first A-share fundamental research"
-  default_prompt: "Use Money Craft to resolve the exact A-share identity and latest report period, generate the deterministic research plan, then research with source-bound facts, exact calculations, explicit uncertainty, and a clear conclusion."
+  default_prompt: "Use Money Craft to resolve the exact A-share identity and latest report period, create or resume the deterministic private research run under the configured Money archive root, then research with source-bound facts, exact calculations, explicit uncertainty, and audit-gated completion; do not describe a .research run as a sealed revision."

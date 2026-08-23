@@ -29,6 +29,26 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research plan \
 
 该命令只生成研究阶段、官方证据、Provider 操作和 artifact 准出合同，不联网、不代写报告，也不把“计划存在”描述成研究完成。
 
+需要实际推进研究时，从同一份计划创建本地可恢复运行；不要手工复制 Provider 操作矩阵：
+
+```bash
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research init \
+  --security <公司全称> --thscode <000000.SH|SZ|BJ> \
+  --as-of <YYYY-MM-DD> --latest-report <YYYY-1..4> \
+  --provider-mode <auto|required|disabled> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research collect \
+  --workspace <init返回的workspace> --resume --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research import-official \
+  --workspace <init返回的workspace> --source-id <S11|S12|S13> \
+  --file <正式来源文件> --url <HTTPS正式来源> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research status \
+  --workspace <init返回的workspace> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research finalize \
+  --workspace <init返回的workspace> --json
+```
+
+`init`、`status` 不联网；`collect` 是显式 Provider 网络边界。`init` 未传 `--workspace` 时，默认在 `~/Documents/sixseven/money/<ticker>-<company>/<as_of>/.research/<run-id>/` 创建唯一运行目录；`MONEY_CRAFT_OUTPUT_ROOT` 或 `--output-root` 可覆盖根目录。必须复用 `init` 返回的 workspace。`.research` 是私有可变研究态，不是正式 revision；正式报告仍须经独立投资账本、审计、离线 verifier 和 seal 门禁进入 `revisions/rNNNN/`。运行目录中的 `plan.json` 不可改写，`case.json` 必须从 plan 派生，capture 和正式来源默认不覆盖。`import-official` 只导入并哈希绑定本地 PDF/HTML，不自动下载或把 Fuyao 当作公告。`finalize` 只有在来源齐备且 report/thesis 的四项 audit 全部通过时才写完成收据。Provider gap 必须保持可见并写入报告限制，不能包装为完整数据。
+
 ## 不可省略的合同
 
 1. 记录当前日期、研究 `as_of`、数据截止时间和最新正式报告期。
@@ -48,11 +68,12 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" doctor --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" data search --query <名称或代码>
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" audit report <报告.md> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" audit financial <报告.md> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research status --workspace <local-workspace> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis prepare-update --previous <旧论文.md> --as-of <YYYY-MM-DD> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis diff --previous <旧论文.md> --current <新论文.md> --json
 ```
 
-数据命令按顺序读取 `FUYAO_API_KEY` 和权限受限的 `~/.config/money-craft/fuyao-api-key`。两者都没有时必须明确失败；研究可改用宿主可用的官方 Web/文件来源，并在报告中标记结构化 Provider 未启用。若没有任何当前来源，停止事实型判断。
+数据命令按顺序读取 `FUYAO_API_KEY` 和权限受限的 `~/.config/money-craft/fuyao-api-key`。两者都没有时必须明确失败；研究可改用宿主可用的官方 Web/文件来源，并在报告中标记结构化 Provider 未启用。若没有任何当前来源，停止事实型判断。`doctor --json` 同时报告凭据状态和当前 research output root，但不联网、不创建目录。
 
 报告可从 [templates/report.md](templates/report.md) 或 [templates/thesis.md](templates/thesis.md) 开始。交付前同时通过 report 和 financial audit；任一失败都不得宣称报告已准出。
 

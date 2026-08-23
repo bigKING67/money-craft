@@ -211,6 +211,11 @@ def validate() -> dict[str, Any]:
         errors.append("local evidence root must remain ignored")
     else:
         checks.append("local-evidence-boundary")
+    ignored_code, ignored_output = run(["git", "check-ignore", "local/research/000333/example.json"])
+    if ignored_code != 0 or ignored_output != "local/research/000333/example.json":
+        errors.append("local research workspaces must remain ignored")
+    else:
+        checks.append("local-research-boundary")
 
     python_files = [str(path.relative_to(ROOT)) for path in owned_files() if path.suffix == ".py"]
     code, output = run([sys.executable, "-m", "py_compile", *python_files])

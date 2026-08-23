@@ -10,6 +10,7 @@ runtime contract for Codex, Pi, Claude, and Grok.
 - Canonical skill: `skills/money-craft/`
 - Runtime: Python 3.10+, standard library only
 - Structured data: optional Fuyao REST provider via `FUYAO_API_KEY` or a protected local key file
+- Research output: `~/Documents/sixseven/money` by default, overridable with `MONEY_CRAFT_OUTPUT_ROOT`
 - Without the provider: use official exchange filings and issuer IR sources;
   never invent missing figures
 - No automatic trading, order placement, account access, or full-market dumps
@@ -45,6 +46,79 @@ python3 skills/money-craft/scripts/money_craft.py research plan \
 The plan binds the identity, dates, official-evidence requirements, bounded
 Fuyao operation matrix, expected artifacts, and audit gates. It does not access
 the network, create a report, or claim that any stage has completed.
+
+Create a resumable local research run from that same plan contract:
+
+```bash
+python3 skills/money-craft/scripts/money_craft.py research init \
+  --security 美的集团 --thscode 000333.SZ \
+  --as-of 2026-08-23 --latest-report 2026-1 \
+  --provider-mode auto --json
+
+python3 skills/money-craft/scripts/money_craft.py research collect \
+  --workspace <workspace-returned-by-init> --resume --json
+```
+
+Without `--workspace`, `init` creates a unique private run under the Money
+archive without pretending that the run is a sealed report:
+
+```text
+~/Documents/sixseven/money/
+└── <ticker>-<company>/
+    └── <YYYY-MM-DD>/
+        ├── .research/<run-id>/       # mutable Money Craft research run
+        │   ├── plan.json
+        │   ├── case.json
+        │   ├── run-state.json
+        │   ├── evidence/
+        │   ├── report.md
+        │   └── thesis.md
+        ├── .working/<investment-run-id>/  # formal archive staging, managed separately
+        └── revisions/rNNNN/               # immutable, audit-gated final archive
+```
+
+The command-line `--output-root` takes precedence over
+`MONEY_CRAFT_OUTPUT_ROOT`, which takes precedence over the default path.
+`--workspace` remains available for an explicitly managed private directory.
+The dynamic workspace printed by `init` is the only path that subsequent run
+commands should use.
+
+`init` is model-free and offline. It writes an immutable `plan.json`, derives
+`case.json` from that plan instead of maintaining a second operation matrix,
+creates draft report/thesis files, and starts an append-only `run-state.json`.
+`collect` is the explicit network boundary: it executes only the bounded Fuyao
+operations in the derived case, writes private non-overwriting captures, and
+returns non-zero when a provider gap remains. A missing credential or a
+workspace initialized with `provider-mode=disabled` fails before collection.
+
+Official filings remain an explicit local import rather than a provider
+substitute or an automatic download:
+
+```bash
+python3 skills/money-craft/scripts/money_craft.py research import-official \
+  --workspace <workspace-returned-by-init> \
+  --source-id S11 --file /path/to/formal-report.pdf \
+  --url https://official.example/formal-report.pdf --json
+
+python3 skills/money-craft/scripts/money_craft.py research status \
+  --workspace <workspace-returned-by-init> --json
+
+python3 skills/money-craft/scripts/money_craft.py research finalize \
+  --workspace <workspace-returned-by-init> --json
+```
+
+The import copies a bounded PDF or HTML snapshot, records its HTTPS source,
+and binds its SHA-256 without retaining the input path. `status` is offline and
+recomputes provider, official-source, report, thesis, manifest, audit, and
+receipt state from the workspace. `finalize` requires terminal evidence,
+builds a metadata-only manifest, runs all four report/thesis audits, and writes
+an immutable completion receipt only when every audit passes. Provider gaps
+remain explicit limitations; none of these commands access an account or place
+a trade. Explicit repository-local workspaces must stay under the ignored
+`local/research/` tree. The archive `.research/` run is private working state,
+not a formal archive revision;
+promotion to `.working/<investment-run-id>` and `revisions/rNNNN` remains under
+the separate investment archive ledger, verifier, and seal gates.
 
 For a repeatable thesis revision, prepare the update contract from an already
 audited thesis and compare the completed revision afterward:

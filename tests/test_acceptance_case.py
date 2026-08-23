@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import subprocess
 import sys
@@ -9,8 +10,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "skills" / "money-craft" / "scripts"))
 
 import acceptance_case as acceptance  # noqa: E402
+import research_run  # noqa: E402
+from research_workflow import company_research_plan  # noqa: E402
 
 
 class AcceptanceCaseTests(unittest.TestCase):
@@ -70,6 +74,23 @@ class AcceptanceCaseTests(unittest.TestCase):
         self.assertIn("000333.SZ", command)
         self.assertNotIn("X-api-key", command)
         self.assertTrue(all(not item.get("allow_error_codes") for item in case["operations"]))
+        plan = company_research_plan(
+            security="美的集团",
+            thscode="000333.SZ",
+            as_of="2026-08-23",
+            latest_report="2026-1",
+            provider={"mode": "disabled", "configured": False, "network_checked": False},
+            today=dt.date(2026, 8, 23),
+        )
+        derived = research_run.derived_case(plan, "0" * 64)
+        self.assertEqual(
+            [(item["id"], item["operation"], item["arguments"]) for item in case["operations"]],
+            [(item["id"], item["operation"], item["arguments"]) for item in derived["operations"]],
+        )
+        self.assertEqual(
+            [item["id"] for item in case["official_sources"]],
+            [item["id"] for item in derived["official_sources"]],
+        )
 
     def test_case_rejects_public_or_parent_traversal_evidence_root(self) -> None:
         case = self.case("../evidence")
