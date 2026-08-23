@@ -1,0 +1,17 @@
+{
+  "name": "money-craft",
+  "version": "0.1.0",
+  "description": "Evidence-first A-share fundamental research and thesis discipline.",
+  "author": {
+    "name": "bigKING67"
+  },
+  "homepage": "https://github.com/bigKING67/money-craft",
+  "repository": "https://github.com/bigKING67/money-craft",
+  "license": "MIT",
+  "keywords": [
+    "investment-research",
+    "a-share",
+    "agent-skill"
+  ]
+}
+

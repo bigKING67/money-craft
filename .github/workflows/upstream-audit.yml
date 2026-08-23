@@ -1,0 +1,27 @@
+name: upstream-audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compare reviewed AI Berkshire commit with remote main
+        run: python3 scripts/upstream_status.py --fetch --json | tee upstream-status.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-status
+          path: upstream-status.json
+          if-no-files-found: error
+

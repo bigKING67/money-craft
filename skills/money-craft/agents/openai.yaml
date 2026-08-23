@@ -1,0 +1,5 @@
+interface:
+  display_name: "Money Craft"
+  short_description: "Evidence-first A-share fundamental research"
+  default_prompt: "Use Money Craft to research this A-share company with source-bound facts, exact calculations, explicit uncertainty, and a clear conclusion."
+

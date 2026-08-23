@@ -1,0 +1,80 @@
+{
+  "schema_version": "money-craft.sources.v1",
+  "verified_at": "2026-08-23",
+  "upstreams": [
+    {
+      "id": "ai-berkshire",
+      "url": "https://github.com/xbtlin/ai-berkshire",
+      "license": "MIT",
+      "license_file": "LICENSES/AI-BERKSHIRE-MIT.txt",
+      "pinned_commit": "fef5533145e2a505c7e07592d61165c7485a98b9",
+      "reviewed_commit": "fef5533145e2a505c7e07592d61165c7485a98b9",
+      "absorbed_commit": "fef5533145e2a505c7e07592d61165c7485a98b9",
+      "runtime_dependency": false,
+      "mappings": [
+        {
+          "source": "skills/investment-checklist.md",
+          "targets": ["skills/money-craft/references/screening.md", "skills/money-craft/references/company-research.md"],
+          "classification": "adapted"
+        },
+        {
+          "source": "skills/quality-screen.md",
+          "targets": ["skills/money-craft/references/screening.md"],
+          "classification": "adapted"
+        },
+        {
+          "source": "skills/investment-research.md",
+          "targets": ["skills/money-craft/references/company-research.md", "skills/money-craft/templates/report.md"],
+          "classification": "adapted"
+        },
+        {
+          "source": "skills/earnings-review.md",
+          "targets": ["skills/money-craft/references/earnings-review.md"],
+          "classification": "adapted"
+        },
+        {
+          "source": "skills/thesis-tracker.md",
+          "targets": ["skills/money-craft/references/valuation-and-thesis.md", "skills/money-craft/templates/thesis.md"],
+          "classification": "adapted"
+        },
+        {
+          "source": "skills/financial-data.md",
+          "targets": ["skills/money-craft/references/financial-data-and-evidence.md"],
+          "classification": "adapted"
+        },
+        {
+          "source": "tools/financial_rigor.py",
+          "targets": ["skills/money-craft/scripts/financial_rigor.py"],
+          "classification": "adapted"
+        },
+        {
+          "source": "tools/report_audit.py",
+          "targets": ["skills/money-craft/scripts/report_audit.py"],
+          "classification": "reimplemented"
+        }
+      ],
+      "excluded": [
+        "reports/",
+        "data/",
+        "assets/",
+        "real-account records",
+        "short-term and technical trading workflows",
+        "automatic trading"
+      ]
+    }
+  ],
+  "documents": [
+    {
+      "id": "fuyao-llms-index",
+      "url": "https://fuyao.aicubes.cn/llms.txt",
+      "sha256": "e121147156b0fa12fa80c29d5d7091ddd95032fe4e42d9ff3ea857aba252335e",
+      "used_for": ["endpoint inventory", "official documentation routing"]
+    },
+    {
+      "id": "fuyao-llms-full",
+      "url": "https://fuyao.aicubes.cn/llms-full.txt",
+      "sha256": "de404f225ce741986864095ee26f724d38a8338d0bcbfabb0e5a52e0d1d0714f",
+      "used_for": ["REST paths", "parameters", "response envelope", "error semantics"]
+    }
+  ]
+}
