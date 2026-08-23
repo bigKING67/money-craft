@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,13 @@ import verify_evidence  # noqa: E402
 
 
 class RepositoryContractTests(unittest.TestCase):
+    ACTION_RELEASES = {
+        "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7.0.1"),
+        "actions/setup-python": ("5fda3b95a4ea91299a34e894583c3862153e4b97", "v7.0.0"),
+        "actions/setup-node": ("820762786026740c76f36085b0efc47a31fe5020", "v7.0.0"),
+        "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
+    }
+
     def test_version_parity(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         paths = [
@@ -42,6 +50,20 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertTrue((ROOT / "upstreams" / "ai-berkshire" / mapping["source"]).is_file())
             for target in mapping["targets"]:
                 self.assertTrue((ROOT / target).is_file())
+
+    def test_workflow_actions_are_pinned_to_reviewed_node24_releases(self) -> None:
+        seen: set[str] = set()
+        pattern = re.compile(r"uses:\s+([^@\s]+)@([0-9a-f]{40})\s+#\s+(v[0-9]+\.[0-9]+\.[0-9]+)")
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            all_uses = [line for line in text.splitlines() if "uses:" in line]
+            matches = pattern.findall(text)
+            self.assertEqual(len(matches), len(all_uses), f"unreviewed mutable action ref in {path.name}")
+            for action, revision, version in matches:
+                self.assertIn(action, self.ACTION_RELEASES)
+                self.assertEqual((revision, version), self.ACTION_RELEASES[action])
+                seen.add(action)
+        self.assertEqual(seen, set(self.ACTION_RELEASES))
 
     def test_atomic_installer_and_force_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
