@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from acceptance_case import AcceptanceError, load_case
+
 ROOT = Path(__file__).resolve().parents[1]
 OWNED_DIRS = [
     ROOT / "skills" / "money-craft",
@@ -22,6 +24,7 @@ OWNED_DIRS = [
     ROOT / ".github",
     ROOT / "tests",
     ROOT / "artifacts",
+    ROOT / "acceptance",
 ]
 SECRET_PATTERNS = [
     re.compile(rb"sk-fuyao-[A-Za-z0-9_-]{12,}"),
@@ -164,23 +167,39 @@ def validate() -> dict[str, Any]:
     else:
         checks.append("public-data-boundary")
 
-    evidence_manifest = ROOT / "artifacts" / "acceptance" / "600519" / "evidence-manifest.json"
-    code, output = run(
-        [sys.executable, "scripts/verify_evidence.py", str(evidence_manifest), "--metadata-only"]
-    )
-    if code:
-        errors.append(f"public evidence manifest validation failed: {output}")
-    else:
-        checks.append("public-evidence-manifest")
-    local_evidence = ROOT / "local" / "evidence" / "600519"
-    if local_evidence.is_dir():
+    case_files = sorted((ROOT / "acceptance" / "cases").glob("*.json"))
+    if not case_files:
+        errors.append("at least one acceptance case contract is required")
+    for case_file in case_files:
+        try:
+            load_case(case_file)
+        except (AcceptanceError, OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"invalid acceptance case {case_file.name}: {exc}")
+    if case_files and not any("invalid acceptance case" in item for item in errors):
+        checks.append("acceptance-case-contracts")
+
+    evidence_manifests = sorted((ROOT / "artifacts" / "acceptance").glob("*/evidence-manifest.json"))
+    if not evidence_manifests:
+        errors.append("at least one public evidence manifest is required")
+    for evidence_manifest in evidence_manifests:
+        case_id = evidence_manifest.parent.name
         code, output = run(
-            [sys.executable, "scripts/verify_evidence.py", str(evidence_manifest), "--require-private"]
+            [sys.executable, "scripts/verify_evidence.py", str(evidence_manifest), "--metadata-only"]
         )
         if code:
-            errors.append(f"private evidence integrity failed: {output}")
-        else:
-            checks.append("private-evidence-integrity")
+            errors.append(f"{case_id} public evidence manifest validation failed: {output}")
+            continue
+        local_evidence = ROOT / "local" / "evidence" / case_id
+        if local_evidence.is_dir():
+            code, output = run(
+                [sys.executable, "scripts/verify_evidence.py", str(evidence_manifest), "--require-private"]
+            )
+            if code:
+                errors.append(f"{case_id} private evidence integrity failed: {output}")
+    if evidence_manifests and not any("evidence manifest validation failed" in item for item in errors):
+        checks.append("public-evidence-manifests")
+    if evidence_manifests and not any("private evidence integrity failed" in item for item in errors):
+        checks.append("private-evidence-integrity")
 
     ignored_code, ignored_output = run(["git", "check-ignore", ".codex/config.toml"])
     if ignored_code != 0 or ignored_output != ".codex/config.toml":

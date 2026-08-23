@@ -38,15 +38,33 @@ distribute Fuyao response payloads, capture receipts, downloaded filings, or
 web-page snapshots. Keep that material under the ignored
 `local/evidence/<case-id>/` tree.
 
-The 600519 Golden Case in `artifacts/acceptance/600519/` demonstrates this
-split. `evidence-manifest.json` records source metadata and SHA-256 digests,
-while the corresponding private files remain local. Verify the public manifest
-alone, or additionally verify the local evidence when it is available:
+The Golden Cases in `artifacts/acceptance/600519/` and
+`artifacts/acceptance/000333/` demonstrate this split across Shanghai and
+Shenzhen listings. Each `evidence-manifest.json` records source metadata and
+SHA-256 digests, while the corresponding private files remain local. Verify a
+public manifest alone, or additionally verify its local evidence when available:
 
 ```bash
 python3 scripts/verify_evidence.py artifacts/acceptance/600519/evidence-manifest.json --metadata-only
 python3 scripts/verify_evidence.py artifacts/acceptance/600519/evidence-manifest.json --require-private
 ```
+
+Acceptance cases are declared under `acceptance/cases/`. The collector only
+supports the bounded Money Craft REST operations; it does not accept arbitrary
+URLs or headers, and credentials never appear in a case file or command line.
+Collection is non-overwriting by default and can resume an interrupted case:
+
+```bash
+python3 scripts/acceptance_case.py collect --case acceptance/cases/000333.json
+python3 scripts/acceptance_case.py collect --case acceptance/cases/000333.json --resume
+python3 scripts/acceptance_case.py build-manifest --case acceptance/cases/000333.json
+python3 scripts/acceptance_case.py verify --case acceptance/cases/000333.json --require-private
+```
+
+Official filings listed by a case must be acquired separately from the declared
+HTTPS source and placed under its private evidence root before building the
+public manifest. This keeps issuer/filing review explicit instead of turning a
+structured-data response into a substitute for primary disclosure.
 
 Fixtures under `tests/fixtures/fuyao/` are synthetic contract examples, not
 captured market data.

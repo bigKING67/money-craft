@@ -80,12 +80,14 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertEqual(backup.parent, root.parent / ".skills-backups")
             self.assertEqual([path.name for path in root.iterdir()], ["money-craft"])
 
-    def test_public_evidence_manifest_is_metadata_only(self) -> None:
-        path = ROOT / "artifacts" / "acceptance" / "600519" / "evidence-manifest.json"
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(verify_evidence.validate_manifest(payload), [])
-        self.assertFalse(payload["distribution"]["provider_payloads_distributed"])
-        self.assertFalse(payload["distribution"]["downloaded_documents_distributed"])
+    def test_public_evidence_manifests_are_metadata_only(self) -> None:
+        paths = sorted((ROOT / "artifacts" / "acceptance").glob("*/evidence-manifest.json"))
+        self.assertTrue(paths)
+        for path in paths:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(verify_evidence.validate_manifest(payload), [], path.parent.name)
+            self.assertFalse(payload["distribution"]["provider_payloads_distributed"])
+            self.assertFalse(payload["distribution"]["downloaded_documents_distributed"])
 
 
 if __name__ == "__main__":
