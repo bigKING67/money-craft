@@ -14,6 +14,11 @@ import acceptance_case as acceptance  # noqa: E402
 
 
 class AcceptanceCaseTests(unittest.TestCase):
+    def temporary_evidence_directory(self) -> tempfile.TemporaryDirectory:
+        evidence_root = ROOT / "local" / "evidence"
+        evidence_root.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(dir=evidence_root)
+
     def case(self, root: str) -> dict[str, object]:
         return {
             "schema": acceptance.CASE_SCHEMA,
@@ -93,7 +98,7 @@ class AcceptanceCaseTests(unittest.TestCase):
             acceptance.operation_status(item, payload, 0)
 
     def test_collect_accepts_declared_provider_gap_and_preserves_capture_boundary(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT / "local" / "evidence") as directory:
+        with self.temporary_evidence_directory() as directory:
             evidence = Path(directory) / "case"
             relative = evidence.relative_to(ROOT).as_posix()
             case = self.case(relative)
@@ -143,7 +148,7 @@ class AcceptanceCaseTests(unittest.TestCase):
             self.assertFalse((evidence / "captures" / "S17").exists())
 
     def test_manifest_hashes_private_files_without_distributing_payloads(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT / "local" / "evidence") as directory:
+        with self.temporary_evidence_directory() as directory:
             evidence = Path(directory)
             relative = evidence.relative_to(ROOT).as_posix()
             case = self.case(relative)
