@@ -15,6 +15,7 @@ description: 对 A 股上市公司做证据优先的基本面筛选、公司研�
 - 完整公司研究：[references/company-research.md](references/company-research.md)
 - 财报或业绩解读：[references/earnings-review.md](references/earnings-review.md)
 - 估值、建立或更新投资论文：[references/valuation-and-thesis.md](references/valuation-and-thesis.md)
+- 将论文更新封存为公司级跟踪历史：[references/tracking-workflow.md](references/tracking-workflow.md)
 - 涉及任何财务、行情或估值数字：[references/financial-data-and-evidence.md](references/financial-data-and-evidence.md)
 - 使用 Fuyao 数据客户端：[references/providers/fuyao.md](references/providers/fuyao.md)
 
@@ -71,6 +72,10 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" audit financial <报告.
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research status --workspace <local-workspace> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis prepare-update --previous <旧论文.md> --as-of <YYYY-MM-DD> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis diff --previous <旧论文.md> --current <新论文.md> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track init --tracking-root <公司目录>/tracking --previous <旧论文.md> --as-of <YYYY-MM-DD> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track check --workspace <init返回的workspace> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track status --tracking-root <公司目录>/tracking --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track verify --tracking-root <公司目录>/tracking --json
 ```
 
 数据命令按顺序读取 `FUYAO_API_KEY` 和权限受限的 `~/.config/money-craft/fuyao-api-key`。两者都没有时必须明确失败；研究可改用宿主可用的官方 Web/文件来源，并在报告中标记结构化 Provider 未启用。若没有任何当前来源，停止事实型判断。`doctor --json` 同时报告凭据状态和当前 research output root，但不联网、不创建目录。
@@ -78,3 +83,5 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis diff --previous <
 报告可从 [templates/report.md](templates/report.md) 或 [templates/thesis.md](templates/thesis.md) 开始。交付前同时通过 report 和 financial audit；任一失败都不得宣称报告已准出。
 
 更新投资论文时必须先生成 `thesis-update-plan.v1`，逐项评估原有假设和红线；新版完成后运行 `thesis diff`。结构化 diff 会阻断证券身份变化、时间倒退、旧更新记录改写、缺少本期更新记录或任一版本审计失败。只有 diff `valid=true` 才可讨论论文发生了什么变化；`signal` 是复核优先级，不是交易指令。
+
+需要把更新沉淀到 `~/Documents/sixseven/money/<ticker>-<company>/tracking/` 时，使用 `track init/check/status/verify`，不要手工拼装 revision。`init`、`status`、`verify` 和 `check` 都离线、无模型、无账户访问；`check` 只在论文、状态、跟踪卡、append-only diff 与两项 audit 全部通过后创建只读 `tNNNN` 并原子切换 `current.json`。未完成占位符、健康度不一致或可写 revision 都必须失败。

@@ -49,6 +49,13 @@ class RepositoryContractTests(unittest.TestCase):
             "research-status.schema.json": "money-craft.research-status.v1",
             "thesis-update-plan.schema.json": "money-craft.thesis-update-plan.v1",
             "thesis-diff.schema.json": "money-craft.thesis-diff.v1",
+            "tracking-current.schema.json": "money-craft.tracking-current.v1",
+            "tracking-init.schema.json": "money-craft.tracking-init.v1",
+            "tracking-revision.schema.json": "money-craft.tracking-revision.v1",
+            "tracking-run-state.schema.json": "money-craft.tracking-run-state.v1",
+            "tracking-state.schema.json": "money-craft.tracking-state.v1",
+            "tracking-status.schema.json": "money-craft.tracking-status.v1",
+            "tracking-verify.schema.json": "money-craft.tracking-verify.v1",
         }
         for filename, schema_name in expected.items():
             payload = json.loads((schema_root / filename).read_text(encoding="utf-8"))

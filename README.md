@@ -28,7 +28,7 @@ python3 skills/money-craft/scripts/money_craft.py doctor --json
 python3 skills/money-craft/scripts/money_craft.py data search --query 贵州茅台
 ```
 
-See `skills/money-craft/references/providers/fuyao.md` for the supported v0.1
+See `skills/money-craft/references/providers/fuyao.md` for the supported v0.2
 operations and evidence-capture contract.
 
 ## Research and thesis workflow
@@ -134,6 +134,49 @@ python3 skills/money-craft/scripts/money_craft.py thesis diff \
 The diff fails closed on identity changes, time reversal, rewritten update
 history, missing current update rows, or an invalid report/financial audit. Its
 signal is a review priority, never an order or trading instruction.
+
+### Company-level tracking archive
+
+Persist an audited thesis update next to the company's dated research folders:
+
+```text
+~/Documents/sixseven/money/
+└── <ticker>-<company>/
+    ├── <YYYY-MM-DD>/revisions/rNNNN/  # immutable formal research archive
+    └── tracking/
+        ├── current.json               # atomic pointer to the latest tracking revision
+        ├── .working/<run-id>/         # private editable update workspace
+        └── revisions/tNNNN/           # read-only thesis/card/state/diff/audits/hashes
+```
+
+Create the first tracking workspace from an audited thesis, complete the three
+editable files using new evidence, then seal the result:
+
+```bash
+python3 skills/money-craft/scripts/money_craft.py track init \
+  --tracking-root <company-dir>/tracking \
+  --previous <audited-thesis.md> \
+  --source-revision <formal-revision-dir> \
+  --as-of 2026-11-01 --json
+
+python3 skills/money-craft/scripts/money_craft.py track check \
+  --workspace <workspace-returned-by-init> --json
+
+python3 skills/money-craft/scripts/money_craft.py track status \
+  --tracking-root <company-dir>/tracking --json
+python3 skills/money-craft/scripts/money_craft.py track verify \
+  --tracking-root <company-dir>/tracking --json
+```
+
+Later `track init` calls resolve the previous thesis from `current.json`, so
+`--previous` is only required for the first revision. All four commands are
+offline and model-free. `track check` validates the append-only thesis diff,
+both audits, state-to-thesis hypothesis/red-line parity, deterministic health
+score, unresolved placeholders, checksums, and the no-trading boundary before
+creating a read-only `tNNNN` and atomically advancing `current.json`. It does
+not fetch evidence or write research conclusions. See
+`skills/money-craft/references/tracking-workflow.md` for the complete contract
+and escalation rules.
 
 ## Public data boundary
 

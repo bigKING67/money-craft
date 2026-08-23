@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 import research_run
+import tracking_workflow
 from research_workflow import WorkflowError, company_research_plan, prepare_thesis_update, thesis_diff
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -674,6 +675,26 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--previous", required=True, type=Path)
     diff.add_argument("--current", required=True, type=Path)
     diff.add_argument("--json", action="store_true")
+
+    track = subparsers.add_parser("track")
+    track_subparsers = track.add_subparsers(dest="track_command", required=True)
+    track_init = track_subparsers.add_parser("init")
+    track_init.add_argument("--tracking-root", required=True, type=Path)
+    track_init.add_argument("--as-of", required=True)
+    track_init.add_argument("--previous", type=Path)
+    track_init.add_argument("--source-revision", type=Path)
+    track_init.add_argument("--workspace", type=Path)
+    track_init.add_argument("--json", action="store_true")
+    track_check = track_subparsers.add_parser("check")
+    track_check.add_argument("--workspace", required=True, type=Path)
+    track_check.add_argument("--json", action="store_true")
+    track_status = track_subparsers.add_parser("status")
+    track_status.add_argument("--tracking-root", required=True, type=Path)
+    track_status.add_argument("--json", action="store_true")
+    track_verify = track_subparsers.add_parser("verify")
+    track_verify.add_argument("--tracking-root", required=True, type=Path)
+    track_verify.add_argument("--no-require-read-only", action="store_true")
+    track_verify.add_argument("--json", action="store_true")
     return parser
 
 
@@ -804,6 +825,19 @@ Official facts change.
         ]:
             raise AssertionError("research run case derivation failed")
         checks.append("research-run-case")
+        health = tracking_workflow.health_contract(
+            {
+                "hypotheses": [
+                    {"ID": "H01", "状态": "WEAKENED"},
+                    {"ID": "H02", "状态": "WEAKENED"},
+                    {"ID": "H03", "状态": "WEAKENED"},
+                ],
+                "red_lines": [{"ID": "R01", "当前状态": "WATCH"}],
+            }
+        )
+        if health["score"] != 7 or health["status"] != "WEAKENED":
+            raise AssertionError("tracking health contract failed")
+        checks.append("tracking-health-contract")
     except Exception as exc:
         errors.append(sanitize_message(exc))
     return {
@@ -1053,6 +1087,34 @@ def run_thesis(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_track(args: argparse.Namespace) -> int:
+    try:
+        if args.track_command == "init":
+            result = tracking_workflow.initialize_tracking(
+                args.tracking_root,
+                as_of=args.as_of,
+                template_root=SKILL_ROOT / "templates",
+                previous=args.previous,
+                source_revision=args.source_revision,
+                workspace=args.workspace,
+            )
+        elif args.track_command == "check":
+            result = tracking_workflow.finalize_tracking(args.workspace)
+        elif args.track_command == "status":
+            result = tracking_workflow.tracking_status(args.tracking_root)
+        elif args.track_command == "verify":
+            result = tracking_workflow.verify_tracking(
+                args.tracking_root,
+                require_read_only=not args.no_require_read_only,
+            )
+        else:
+            raise WorkflowError("unsupported_workflow", "unsupported track command")
+    except tracking_workflow.TrackingError as exc:
+        raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
+    print_json(result)
+    return 0 if result.get("valid", True) else EXIT_PROVIDER
+
+
 def error_payload(
     exc: MoneyCraftError,
     operation: str | None = None,
@@ -1098,6 +1160,8 @@ def main() -> int:
             return run_research(args)
         if args.command == "thesis":
             return run_thesis(args)
+        if args.command == "track":
+            return run_track(args)
         raise MoneyCraftError("usage_error", "unsupported command", exit_code=EXIT_USAGE)
     except WorkflowError as exc:
         print_json(

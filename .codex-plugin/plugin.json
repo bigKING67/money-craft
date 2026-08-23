@@ -1,6 +1,6 @@
 {
   "name": "money-craft",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Evidence-first A-share fundamental research and thesis discipline.",
   "author": {
     "name": "bigKING67",
@@ -42,4 +42,3 @@
     "brandColor": "#14532D"
   }
 }
-

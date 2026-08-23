@@ -108,7 +108,7 @@ def audit_text(text: str) -> dict[str, Any]:
     if not valid_iso_datetime(metadata.get("data_cutoff", "")):
         errors.append("data_cutoff must be an ISO-8601 timestamp")
     if metadata.get("base_currency") != "CNY":
-        errors.append("base_currency must be CNY in v0.1")
+        errors.append("base_currency must be CNY in v0.2")
     headings = set(re.findall(r"^##\s+(.+?)\s*$", body, re.MULTILINE))
     for heading in sorted(REQUIRED_HEADINGS - headings):
         errors.append(f"missing required section: {heading}")

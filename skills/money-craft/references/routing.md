@@ -8,12 +8,15 @@
 | 完整分析公司、商业模式、护城河和风险 | `research` | `company-research.md` + 数据证据规则 |
 | 年报、季报、业绩发生了什么变化 | `earnings` | `earnings-review.md` + 数据证据规则 |
 | 估值、建立投资逻辑、更新原有逻辑 | `thesis` | `valuation-and-thesis.md` + 数据证据规则 |
+| 将已完成的论文更新封存到公司级历史 | `track` | `tracking-workflow.md` + `valuation-and-thesis.md` |
 
 用户同时要求多个模式时，按 `screen -> research -> earnings/thesis` 复用已核验事实，不重复抓取同一响应。快速筛选触发硬否决后，只有用户仍明确要求时才继续完整研究。
 
+论文跟踪不是独立的研究结论生成模式：先按 `earnings`、`research` 或 `thesis` 获得新证据和更新内容，再用 `track` 的离线门禁封存。
+
 ## 证券身份
 
-先确定公司全称、完整 `thscode`、交易所、币种和 share class。Money Craft v0.1 只支持 `.SH`、`.SZ`、`.BJ` 的 A 股上市公司。未上市公司、基金、指数、港美股和纯行业研究返回范围说明，不套用 A 股模板。
+先确定公司全称、完整 `thscode`、交易所、币种和 share class。Money Craft v0.2 只支持 `.SH`、`.SZ`、`.BJ` 的 A 股上市公司。未上市公司、基金、指数、港美股和纯行业研究返回范围说明，不套用 A 股模板。
 
 ## 资料可得性
 
@@ -26,4 +29,3 @@
 ## 输出边界
 
 允许输出研究判断、观察清单和触发重新评估的条件；不得执行交易、访问账户、承诺收益或把 Provider 快照描述为无时间边界的“实时事实”。
-

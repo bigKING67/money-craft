@@ -12,10 +12,10 @@ MCP 工具列出具体文档链接；它不是完整字段规范。`llms-full.tx
 合同和真实响应为准，不能只按索引标题猜测参数或字段。
 
 索引还包含全市场导出、指数、基金、竞价、龙虎榜、热榜和其他特色数据。
-Money Craft v0.1 只开放下表中与证据优先基本面研究直接相关的有界能力；文档
+Money Craft v0.2 只开放下表中与证据优先基本面研究直接相关的有界能力；文档
 里存在某个接口，不等于本客户端应自动暴露该接口。
 
-Money Craft v0.1 使用固定 HTTPS Base URL `https://fuyao.aicubes.cn`，通过请求头 `X-api-key` 鉴权。运行时优先读取环境变量 `FUYAO_API_KEY`，否则读取权限必须为 `0600` 或更严格的 `~/.config/money-craft/fuyao-api-key`。密钥文件必须由当前用户拥有、必须是普通文件且不能是符号链接。没有命令行 key 参数或可覆盖的生产 base URL。
+Money Craft v0.2 使用固定 HTTPS Base URL `https://fuyao.aicubes.cn`，通过请求头 `X-api-key` 鉴权。运行时优先读取环境变量 `FUYAO_API_KEY`，否则读取权限必须为 `0600` 或更严格的 `~/.config/money-craft/fuyao-api-key`。密钥文件必须由当前用户拥有、必须是普通文件且不能是符号链接。没有命令行 key 参数或可覆盖的生产 base URL。
 
 ## 支持的 REST 能力
 
