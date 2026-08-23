@@ -30,6 +30,37 @@ python3 skills/money-craft/scripts/money_craft.py data search --query 贵州茅�
 See `skills/money-craft/references/providers/fuyao.md` for the supported v0.1
 operations and evidence-capture contract.
 
+## Research and thesis workflow
+
+After resolving the exact A-share identity and latest formal reporting period,
+generate a model-free company research contract:
+
+```bash
+python3 skills/money-craft/scripts/money_craft.py research plan \
+  --security 美的集团 --thscode 000333.SZ \
+  --as-of 2026-08-23 --latest-report 2026-1 \
+  --provider-mode auto --json
+```
+
+The plan binds the identity, dates, official-evidence requirements, bounded
+Fuyao operation matrix, expected artifacts, and audit gates. It does not access
+the network, create a report, or claim that any stage has completed.
+
+For a repeatable thesis revision, prepare the update contract from an already
+audited thesis and compare the completed revision afterward:
+
+```bash
+python3 skills/money-craft/scripts/money_craft.py thesis prepare-update \
+  --previous thesis-old.md --as-of 2026-11-01 --json
+
+python3 skills/money-craft/scripts/money_craft.py thesis diff \
+  --previous thesis-old.md --current thesis-new.md --json
+```
+
+The diff fails closed on identity changes, time reversal, rewritten update
+history, missing current update rows, or an invalid report/financial audit. Its
+signal is a review priority, never an order or trading instruction.
+
 ## Public data boundary
 
 The repository distributes code, schemas, synthetic test fixtures, derived

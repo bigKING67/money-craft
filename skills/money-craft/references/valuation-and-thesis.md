@@ -17,7 +17,7 @@
 
 ## 更新 thesis
 
-读取旧版本后逐项比较，不重写历史：
+先运行 `money_craft.py thesis prepare-update`。旧版本必须已经通过 report 和 financial audit；工具将旧论文的 SHA-256、身份、数据截止、假设、红线、来源 ID 和更新历史绑定进更新计划。读取旧版本后逐项比较，不重写历史：
 
 - `SUPPORTED`：新证据支持。
 - `WEAKENED`：仍可成立但趋势不利。
@@ -25,5 +25,14 @@
 - `BROKEN`：核心假设或红线被推翻。
 - `UNVERIFIED`：本期缺少可用证据。
 
-追加日期、来源、假设变化、估值变化、反方证据和下次检查条件。可以提出“需要重新评估”的研究结论，但不得代替用户执行账户或交易动作。
+红线状态使用 `CLEAR`、`WATCH`、`TRIGGERED`、`UNVERIFIED`；严重度只使用 `fatal` 或 `material`。
 
+新版必须保留所有旧更新行原文，并追加恰好一行与新版 `as_of` 相同日期的记录。完成新版后运行 `money_craft.py thesis diff`：
+
+- 两版都必须通过 report 和 financial audit；
+- 公司、`thscode` 和基础币种必须一致；
+- `as_of` 与 `data_cutoff` 不得倒退；
+- 旧更新历史必须是新版更新历史的完整前缀；
+- 输出假设、红线、结论、估值、风险和来源的结构化变化。
+
+`NO_MATERIAL_CHANGE`、`CHANGED`、`REVIEW_REQUIRED`、`CRITICAL_REVIEW` 只表示复核优先级。可以据此提出“需要重新评估”的研究结论，但不得把它转成自动买卖或账户动作。

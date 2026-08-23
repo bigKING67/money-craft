@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
+from research_workflow import WorkflowError, company_research_plan, prepare_thesis_update, thesis_diff
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
 VERSION = (SKILL_ROOT / "VERSION").read_text(encoding="utf-8").strip()
@@ -627,6 +629,29 @@ def build_parser() -> argparse.ArgumentParser:
         audit_parser = audit_subparsers.add_parser(name)
         audit_parser.add_argument("report_path")
         audit_parser.add_argument("--json", action="store_true")
+
+    research = subparsers.add_parser("research")
+    research_subparsers = research.add_subparsers(dest="research_command", required=True)
+    research_plan = research_subparsers.add_parser("plan")
+    research_plan.add_argument("--security", required=True)
+    research_plan.add_argument("--thscode", required=True)
+    research_plan.add_argument("--as-of", required=True)
+    research_plan.add_argument("--latest-report", required=True)
+    research_plan.add_argument(
+        "--provider-mode", choices=["auto", "required", "disabled"], default="auto"
+    )
+    research_plan.add_argument("--json", action="store_true")
+
+    thesis = subparsers.add_parser("thesis")
+    thesis_subparsers = thesis.add_subparsers(dest="thesis_command", required=True)
+    prepare_update = thesis_subparsers.add_parser("prepare-update")
+    prepare_update.add_argument("--previous", required=True, type=Path)
+    prepare_update.add_argument("--as-of", required=True)
+    prepare_update.add_argument("--json", action="store_true")
+    diff = thesis_subparsers.add_parser("diff")
+    diff.add_argument("--previous", required=True, type=Path)
+    diff.add_argument("--current", required=True, type=Path)
+    diff.add_argument("--json", action="store_true")
     return parser
 
 
@@ -715,6 +740,17 @@ Official facts change.
         if not audit_financial(sample)["valid"]:
             raise AssertionError("financial audit fixture failed")
         checks.append("financial-audit")
+        plan = company_research_plan(
+            security="Example",
+            thscode="600519.SH",
+            as_of="2026-08-23",
+            latest_report="2026-2",
+            provider={"mode": "disabled", "configured": False, "network_checked": False},
+            today=dt.date(2026, 8, 23),
+        )
+        if plan["latest_annual_period"] != "2025-4" or len(plan["provider_operations"]) != 14:
+            raise AssertionError("company research plan fixture failed")
+        checks.append("company-research-plan")
     except Exception as exc:
         errors.append(sanitize_message(exc))
     return {
@@ -870,6 +906,49 @@ def run_audit(args: argparse.Namespace) -> int:
     return 0 if result["valid"] else EXIT_PROVIDER
 
 
+def research_provider(mode: str) -> dict[str, Any]:
+    if mode == "disabled":
+        return {"mode": mode, "configured": False, "configuration_source": None, "network_checked": False}
+    try:
+        credential = load_fuyao_credential()
+    except MoneyCraftError as exc:
+        if exc.kind == "missing_configuration" and mode == "auto":
+            return {"mode": mode, "configured": False, "configuration_source": None, "network_checked": False}
+        raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
+    return {
+        "mode": mode,
+        "configured": True,
+        "configuration_source": credential.source,
+        "network_checked": False,
+    }
+
+
+def run_research(args: argparse.Namespace) -> int:
+    if args.research_command != "plan":
+        raise WorkflowError("unsupported_workflow", "unsupported research command")
+    print_json(
+        company_research_plan(
+            security=args.security,
+            thscode=args.thscode,
+            as_of=args.as_of,
+            latest_report=args.latest_report,
+            provider=research_provider(args.provider_mode),
+        )
+    )
+    return 0
+
+
+def run_thesis(args: argparse.Namespace) -> int:
+    if args.thesis_command == "prepare-update":
+        result = prepare_thesis_update(args.previous, as_of=args.as_of)
+    elif args.thesis_command == "diff":
+        result = thesis_diff(args.previous, args.current)
+    else:
+        raise WorkflowError("unsupported_workflow", "unsupported thesis command")
+    print_json(result)
+    return 0
+
+
 def error_payload(
     exc: MoneyCraftError,
     operation: str | None = None,
@@ -911,7 +990,20 @@ def main() -> int:
             return run_data(args)
         if args.command == "audit":
             return run_audit(args)
+        if args.command == "research":
+            return run_research(args)
+        if args.command == "thesis":
+            return run_thesis(args)
         raise MoneyCraftError("usage_error", "unsupported command", exit_code=EXIT_USAGE)
+    except WorkflowError as exc:
+        print_json(
+            {
+                "schema": "money-craft.workflow-error.v1",
+                "valid": False,
+                "error": {"kind": exc.kind, "message": sanitize_message(exc)},
+            }
+        )
+        return exc.exit_code
     except MoneyCraftError as exc:
         operation = (
             getattr(args, "resolved_operation", getattr(args, "data_command", None))

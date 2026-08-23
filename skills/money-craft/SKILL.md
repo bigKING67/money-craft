@@ -18,6 +18,17 @@ description: 对 A 股上市公司做证据优先的基本面筛选、公司研�
 - 涉及任何财务、行情或估值数字：[references/financial-data-and-evidence.md](references/financial-data-and-evidence.md)
 - 使用 Fuyao 数据客户端：[references/providers/fuyao.md](references/providers/fuyao.md)
 
+完整公司研究在身份和最新正式报告期明确后，先运行确定性的统一入口：
+
+```bash
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research plan \
+  --security <公司全称> --thscode <000000.SH|SZ|BJ> \
+  --as-of <YYYY-MM-DD> --latest-report <YYYY-1..4> \
+  --provider-mode <auto|required|disabled> --json
+```
+
+该命令只生成研究阶段、官方证据、Provider 操作和 artifact 准出合同，不联网、不代写报告，也不把“计划存在”描述成研究完成。
+
 ## 不可省略的合同
 
 1. 记录当前日期、研究 `as_of`、数据截止时间和最新正式报告期。
@@ -37,8 +48,12 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" doctor --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" data search --query <名称或代码>
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" audit report <报告.md> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" audit financial <报告.md> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis prepare-update --previous <旧论文.md> --as-of <YYYY-MM-DD> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis diff --previous <旧论文.md> --current <新论文.md> --json
 ```
 
 数据命令按顺序读取 `FUYAO_API_KEY` 和权限受限的 `~/.config/money-craft/fuyao-api-key`。两者都没有时必须明确失败；研究可改用宿主可用的官方 Web/文件来源，并在报告中标记结构化 Provider 未启用。若没有任何当前来源，停止事实型判断。
 
 报告可从 [templates/report.md](templates/report.md) 或 [templates/thesis.md](templates/thesis.md) 开始。交付前同时通过 report 和 financial audit；任一失败都不得宣称报告已准出。
+
+更新投资论文时必须先生成 `thesis-update-plan.v1`，逐项评估原有假设和红线；新版完成后运行 `thesis diff`。结构化 diff 会阻断证券身份变化、时间倒退、旧更新记录改写、缺少本期更新记录或任一版本审计失败。只有 diff `valid=true` 才可讨论论文发生了什么变化；`signal` 是复核优先级，不是交易指令。

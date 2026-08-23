@@ -1,5 +1,16 @@
 # 上市公司完整研究
 
+## 统一入口
+
+证券身份、`as_of` 和最新正式报告期明确后，先运行 `money_craft.py research plan`。计划必须绑定公司全称、完整 `thscode`、A 股交易所、最新报告期和最近年度报告期，并输出：
+
+- `identity -> official-evidence -> provider-cross-check -> research -> valuation-and-thesis -> audit` 六阶段门禁；
+- 固定来源 ID 的有界 Provider 操作矩阵；
+- 最新正式报告、年度报告、交易所或公司 IR 三类一手证据要求；
+- report、thesis、metadata-only evidence manifest 和四项 audit artifact 合同。
+
+`research plan` 是可重复的执行规格，不是研究结果。它不访问网络，不证明 Provider 数据存在，也不能替代实际来源捕获、计算和审计。
+
 ## 研究顺序
 
 1. **资料与偏见**：评级资料可得性，写出市场共识和最可能的共识陷阱。
@@ -26,4 +37,3 @@
 ## 结论纪律
 
 清楚区分好公司、好生意和好价格。若估值所依赖的盈利不是正数、现金流不可持续或数据冲突未解决，停止输出精确目标价，改为条件区间和补证事项。不得把报告完整度当成投资确定性。
-

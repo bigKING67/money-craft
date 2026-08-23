@@ -35,6 +35,17 @@ class RepositoryContractTests(unittest.TestCase):
         for path in paths:
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["version"], version)
 
+    def test_workflow_schemas_are_packaged(self) -> None:
+        schema_root = ROOT / "skills" / "money-craft" / "schemas"
+        expected = {
+            "company-research-plan.schema.json": "money-craft.company-research-plan.v1",
+            "thesis-update-plan.schema.json": "money-craft.thesis-update-plan.v1",
+            "thesis-diff.schema.json": "money-craft.thesis-diff.v1",
+        }
+        for filename, schema_name in expected.items():
+            payload = json.loads((schema_root / filename).read_text(encoding="utf-8"))
+            self.assertEqual(payload["properties"]["schema"]["const"], schema_name)
+
     def test_pinned_submodule_and_source_targets(self) -> None:
         lock = json.loads((ROOT / "sources.lock.json").read_text(encoding="utf-8"))
         upstream = lock["upstreams"][0]
