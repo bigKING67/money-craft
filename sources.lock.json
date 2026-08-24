@@ -1,6 +1,6 @@
 {
   "schema_version": "money-craft.sources.v1",
-  "verified_at": "2026-08-23",
+  "verified_at": "2026-08-24",
   "upstreams": [
     {
       "id": "ai-berkshire",
@@ -11,6 +11,46 @@
       "reviewed_commit": "fef5533145e2a505c7e07592d61165c7485a98b9",
       "absorbed_commit": "fef5533145e2a505c7e07592d61165c7485a98b9",
       "runtime_dependency": false,
+      "reviews": [
+        {
+          "from_commit": "fef5533145e2a505c7e07592d61165c7485a98b9",
+          "through_commit": "5402e44d4c2dfe23ef9e15139091acb057181219",
+          "reviewed_at": "2026-08-24",
+          "disposition": "pin-retained-report-only",
+          "changed_scope": ["reports/"],
+          "mapped_source_changes": 0,
+          "mechanism_observations": [
+            {
+              "sources": [
+                "reports/快手/快手2026Q2财报深度解读-20260820.md",
+                "reports/茅台/茅台-2026半年度业绩说明会全文实录-20260821.md",
+                "reports/MINIMAX/MiniMax-三大报表解析-FY2025-20260824.md"
+              ],
+              "targets": [
+                "skills/money-craft/scripts/research_workflow.py",
+                "skills/money-craft/references/company-research.md",
+                "skills/money-craft/references/earnings-review.md"
+              ],
+              "classification": "reimplemented",
+              "mechanism": "conditional search and capture of decision-critical transaction, management-Q&A, and post-period primary disclosures"
+            },
+            {
+              "sources": [
+                "reports/五粮液/《看懂五粮液》-20260822/03-会计重述-消失的303亿.md",
+                "reports/五粮液/五粮液-三大报表解析-2025年报及2026Q1-20260824.md",
+                "reports/腾讯/腾讯-三大报表解析-2026Q2-20260824.md"
+              ],
+              "targets": [
+                "skills/money-craft/scripts/financial_reconciliation.py",
+                "skills/money-craft/schemas/financial-reconciliation.schema.json",
+                "skills/money-craft/references/financial-data-and-evidence.md"
+              ],
+              "classification": "reimplemented",
+              "mechanism": "restatement-basis tagging, three-statement reconciliation, and accounting-presentation-to-economics receipts"
+            }
+          ]
+        }
+      ],
       "mappings": [
         {
           "source": "skills/investment-checklist.md",

@@ -89,7 +89,7 @@ class AcceptanceCaseTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["id"] for item in case["official_sources"]],
-            [item["id"] for item in derived["official_sources"]],
+            [item["id"] for item in derived["official_sources"] if item.get("required", True)],
         )
 
     def test_case_rejects_public_or_parent_traversal_evidence_root(self) -> None:

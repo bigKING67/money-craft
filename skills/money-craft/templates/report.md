@@ -24,6 +24,14 @@ provider_status: {{configured_or_unavailable}}
 
 {{business_model_moat_management_and_counterevidence}}
 
+## 重大披露与期后事项
+
+{{triggered_material_transaction_management_qa_and_post_period_sources_or_no_trigger_assessment}}
+
+## 重述口径与三表勾稽
+
+{{reported_restated_or_comparable_basis_and_financial_reconciliation_artifact_summary}}
+
 ## 估值与假设
 
 {{bear_base_bull_scenarios_with_formula_inputs_and_units}}
@@ -42,4 +50,3 @@ provider_status: {{configured_or_unavailable}}
 
 - [S01] {{official_source_url_or_local_capture_path}}
 - [S02] {{independent_source_url_or_local_capture_path}}
-

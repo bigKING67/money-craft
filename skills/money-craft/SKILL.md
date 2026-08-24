@@ -40,7 +40,7 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research init \
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research collect \
   --workspace <init返回的workspace> --resume --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research import-official \
-  --workspace <init返回的workspace> --source-id <S11|S12|S13> \
+  --workspace <init返回的workspace> --source-id <S11|S12|S13|S18|S19|S20> \
   --file <正式来源文件> --url <HTTPS正式来源> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research status \
   --workspace <init返回的workspace> --json
@@ -48,7 +48,7 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research finalize \
   --workspace <init返回的workspace> --json
 ```
 
-`init`、`status` 不联网；`collect` 是显式 Provider 网络边界。`init` 未传 `--workspace` 时，默认在 `~/Documents/sixseven/money/<ticker>-<company>/<as_of>/.research/<run-id>/` 创建唯一运行目录；`MONEY_CRAFT_OUTPUT_ROOT` 或 `--output-root` 可覆盖根目录。必须复用 `init` 返回的 workspace。`.research` 是私有可变研究态，不是正式 revision；正式报告仍须经独立投资账本、审计、离线 verifier 和 seal 门禁进入 `revisions/rNNNN/`。运行目录中的 `plan.json` 不可改写，`case.json` 必须从 plan 派生，capture 和正式来源默认不覆盖。`import-official` 只导入并哈希绑定本地 PDF/HTML，不自动下载或把 Fuyao 当作公告。`finalize` 只有在来源齐备且 report/thesis 的四项 audit 全部通过时才写完成收据。Provider gap 必须保持可见并写入报告限制，不能包装为完整数据。
+`init`、`status` 不联网；`collect` 是显式 Provider 网络边界。`init` 未传 `--workspace` 时，默认在 `~/Documents/sixseven/money/<ticker>-<company>/<as_of>/.research/<run-id>/` 创建唯一运行目录；`MONEY_CRAFT_OUTPUT_ROOT` 或 `--output-root` 可覆盖根目录。必须复用 `init` 返回的 workspace。`.research` 是私有可变研究态，不是正式 revision；正式报告仍须经独立投资账本、审计、离线 verifier 和 seal 门禁进入 `revisions/rNNNN/`。运行目录中的 `plan.json` 不可改写，`case.json` 必须从 plan 派生，capture 和正式来源默认不覆盖。`S11/S12/S13` 是必需来源；`S18/S19/S20` 分别用于被触发的重大交易或资本事项、官方管理层问答、报告期后重大事项。未触发的可选槽位不阻断，但一旦相关事实影响结论就必须导入。`import-official` 只导入并哈希绑定本地 PDF/HTML，不自动下载或把 Fuyao 当作公告。`init` 同时生成 `financial-reconciliation.json` 草稿；`finalize` 只有在来源齐备、report/thesis 四项 audit 和 reconciliation audit 全部通过时才写完成收据。Provider gap 必须保持可见并写入报告限制，不能包装为完整数据。
 
 ## 不可省略的合同
 
@@ -69,6 +69,7 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" doctor --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" data search --query <名称或代码>
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" audit report <报告.md> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" audit financial <报告.md> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" audit reconciliation <financial-reconciliation.json> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research status --workspace <local-workspace> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis prepare-update --previous <旧论文.md> --as-of <YYYY-MM-DD> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" thesis diff --previous <旧论文.md> --current <新论文.md> --json
@@ -80,7 +81,7 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track verify --tracking-
 
 数据命令按顺序读取 `FUYAO_API_KEY` 和权限受限的 `~/.config/money-craft/fuyao-api-key`。两者都没有时必须明确失败；研究可改用宿主可用的官方 Web/文件来源，并在报告中标记结构化 Provider 未启用。若没有任何当前来源，停止事实型判断。`doctor --json` 同时报告凭据状态和当前 research output root，但不联网、不创建目录。
 
-报告可从 [templates/report.md](templates/report.md) 或 [templates/thesis.md](templates/thesis.md) 开始。交付前同时通过 report 和 financial audit；任一失败都不得宣称报告已准出。
+报告可从 [templates/report.md](templates/report.md) 或 [templates/thesis.md](templates/thesis.md) 开始。完整公司研究和财报精读还必须完成 plan 生成的 reconciliation artifact：明确本期/比较期是原披露、重述还是可比估算，校验资产负债式和现金余额勾稽，Q2-Q4 还要校验累计值推导单季，并处理会计列报到经营实质、期后事项。任一 audit 失败都不得宣称报告已准出。
 
 更新投资论文时必须先生成 `thesis-update-plan.v1`，逐项评估原有假设和红线；新版完成后运行 `thesis diff`。结构化 diff 会阻断证券身份变化、时间倒退、旧更新记录改写、缺少本期更新记录或任一版本审计失败。只有 diff `valid=true` 才可讨论论文发生了什么变化；`signal` 是复核优先级，不是交易指令。
 

@@ -627,7 +627,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = subparsers.add_parser("audit")
     audit_subparsers = audit.add_subparsers(dest="audit_command", required=True)
-    for name in ("report", "financial"):
+    for name in ("report", "financial", "reconciliation"):
         audit_parser = audit_subparsers.add_parser(name)
         audit_parser.add_argument("report_path")
         audit_parser.add_argument("--json", action="store_true")
@@ -822,6 +822,9 @@ Official facts change.
             "S11",
             "S12",
             "S13",
+            "S18",
+            "S19",
+            "S20",
         ]:
             raise AssertionError("research run case derivation failed")
         checks.append("research-run-case")
@@ -985,8 +988,12 @@ def run_audit(args: argparse.Namespace) -> int:
         from report_audit import audit_file
 
         result = audit_file(path)
-    else:
+    elif args.audit_command == "financial":
         from financial_rigor import audit_file
+
+        result = audit_file(path)
+    else:
+        from financial_reconciliation import audit_file
 
         result = audit_file(path)
     print_json(result)

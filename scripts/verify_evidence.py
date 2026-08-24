@@ -12,7 +12,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-ALLOWED_KINDS = {"provider-response", "official-document", "official-index"}
+ALLOWED_KINDS = {"provider-response", "official-document", "official-index", "official-material"}
 
 
 def load_manifest(path: Path) -> dict[str, Any]:

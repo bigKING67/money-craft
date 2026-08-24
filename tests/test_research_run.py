@@ -127,6 +127,10 @@ provider_status: configured
 - 公司身份已经核验 [S01]
 - 正式报告已经导入 [S11]
 {extra}
+## 重大披露与期后事项
+已按条件路由核对重大披露与期后事项 [S11]
+## 重述口径与三表勾稽
+口径和三表勾稽结果记录在结构化回执中 [S11]
 ## 估值与假设
 情景输入仍需持续复核。
 <!-- money-craft-calc: {{"id":"C01","operation":"add","inputs":["1","2"],"expected":"3"}} -->
@@ -139,6 +143,87 @@ provider_status: configured
 - [S01] `evidence/S01-search.normalized.json`
 - [S11] `evidence/S11-official.pdf`
 """
+
+
+def valid_reconciliation() -> dict[str, object]:
+    return {
+        "schema": "money-craft.financial-reconciliation.v1",
+        "security": "美的集团",
+        "thscode": "000333.SZ",
+        "as_of": "2026-08-23",
+        "base_currency": "CNY",
+        "required_checks": ["balance-sheet-equation", "cash-balance-tie"],
+        "period_basis": [
+            {
+                "role": "current",
+                "period": "2026-1",
+                "basis": "reported",
+                "source_ids": ["S11"],
+                "notes": "Current period formal filing.",
+            },
+            {
+                "role": "comparison",
+                "period": "2025-1",
+                "basis": "reported",
+                "source_ids": ["S11", "S12"],
+                "notes": "Comparison period reported column.",
+            },
+        ],
+        "restatement_assessment": {
+            "status": "none-disclosed",
+            "source_ids": ["S11", "S12"],
+            "notes": "No retrospective restatement was disclosed in the inspected filings.",
+        },
+        "material_disclosure_assessment": [
+            {
+                "source_id": "S18",
+                "status": "not-triggered",
+                "notes": "No decision-critical transaction or capital-structure trigger was identified.",
+            },
+            {
+                "source_id": "S19",
+                "status": "not-triggered",
+                "notes": "Management Q&A was not required for a decision-critical claim.",
+            },
+            {
+                "source_id": "S20",
+                "status": "not-triggered",
+                "notes": "No decision-critical post-reporting-period event trigger was identified.",
+            },
+        ],
+        "checks": [
+            {
+                "id": "FR01",
+                "kind": "balance-sheet-equation",
+                "period": "2026-1",
+                "unit": "CNY million",
+                "inputs": {"assets": "100", "liabilities": "40", "equity": "60"},
+                "tolerance": "0.000001",
+                "source_ids": ["S11"],
+            },
+            {
+                "id": "FR02",
+                "kind": "cash-balance-tie",
+                "period": "2026-1",
+                "unit": "CNY million",
+                "inputs": {"balance_sheet_cash": "25", "cash_flow_ending_cash": "25"},
+                "tolerance": "0.000001",
+                "source_ids": ["S11"],
+            },
+        ],
+        "presentation_to_economics": {
+            "status": "no-material-distortion",
+            "source_ids": ["S11"],
+            "notes": "No decision-critical accounting presentation distortion was identified.",
+            "items": [],
+        },
+        "subsequent_events": {
+            "status": "none-disclosed",
+            "source_ids": ["S11", "S13"],
+            "notes": "No material post-reporting-period event was identified through the official index.",
+            "items": [],
+        },
+    }
 
 
 class ResearchRunTests(unittest.TestCase):
@@ -161,7 +246,12 @@ class ResearchRunTests(unittest.TestCase):
     def import_official_sources(self, workspace: Path, directory: str) -> None:
         source_root = Path(directory) / "official"
         source_root.mkdir()
-        for source_id, payload in (("S11", b"%PDF-1.7\nq1"), ("S12", b"%PDF-1.7\nannual"), ("S13", b"<!doctype html><html></html>")):
+        sources = (
+            ("S11", b"%PDF-1.7\nq1"),
+            ("S12", b"%PDF-1.7\nannual"),
+            ("S13", b"<!doctype html><html></html>"),
+        )
+        for source_id, payload in sources:
             source = source_root / source_id
             source.write_bytes(payload)
             result = research_run.import_official_source(
@@ -183,7 +273,15 @@ class ResearchRunTests(unittest.TestCase):
                 [(item["id"], item["operation"], item["arguments"]) for item in plan["provider_operations"]],
             )
             self.assertEqual(len(case["operations"]), 14)
-            self.assertEqual([item["id"] for item in case["official_sources"]], ["S11", "S12", "S13"])
+            self.assertEqual(
+                [item["id"] for item in case["official_sources"]],
+                ["S11", "S12", "S13", "S18", "S19", "S20"],
+            )
+            self.assertTrue((workspace / "financial-reconciliation.json").is_file())
+            self.assertEqual(
+                [item["id"] for item in case["official_sources"] if item.get("required", True)],
+                ["S11", "S12", "S13"],
+            )
             with self.assertRaisesRegex(research_run.ResearchRunError, "already exists"):
                 self.initialize(directory)
             plan["as_of"] = "2026-08-22"
@@ -313,10 +411,19 @@ class ResearchRunTests(unittest.TestCase):
             (workspace / "thesis.md").write_text(
                 valid_report("money-craft.thesis.v1", "thesis"), encoding="utf-8"
             )
+            (workspace / "financial-reconciliation.json").write_text(
+                json.dumps(valid_reconciliation(), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
             result = research_run.finalize_workspace(workspace)
             self.assertTrue(result["valid"], result["audits"])
             self.assertEqual(result["evidence_manifest"]["source_count"], 17)
+            self.assertTrue(result["audits"]["financial_reconciliation"]["valid"])
             self.assertIsNotNone(result["receipt"])
+            receipt = json.loads((workspace / "completion-receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(receipt["bindings"]), 11)
+            self.assertIn("financial-reconciliation.json", receipt["bindings"])
+            self.assertIn("financial-reconciliation-audit.json", receipt["bindings"])
             status = research_run.research_status(workspace)
             self.assertTrue(status["complete"])
             self.assertTrue(research_run.finalize_workspace(workspace)["valid"])
@@ -327,6 +434,81 @@ class ResearchRunTests(unittest.TestCase):
             stale = research_run.research_status(workspace)
             self.assertFalse(stale["complete"])
             self.assertTrue(any("stale" in warning for warning in stale["warnings"]))
+
+    def test_finalize_fails_closed_while_reconciliation_is_unverified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = self.initialize(directory)
+            self.collect(workspace)
+            self.import_official_sources(workspace, directory)
+            (workspace / "report.md").write_text(
+                valid_report("money-craft.report.v1", "research"), encoding="utf-8"
+            )
+            (workspace / "thesis.md").write_text(
+                valid_report("money-craft.thesis.v1", "thesis"), encoding="utf-8"
+            )
+            result = research_run.finalize_workspace(workspace)
+            self.assertFalse(result["valid"])
+            self.assertFalse(result["audits"]["financial_reconciliation"]["valid"])
+            self.assertIsNone(result["receipt"])
+            self.assertFalse((workspace / "completion-receipt.json").exists())
+
+    def test_research_report_requires_source_bound_disclosure_and_reconciliation_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.md"
+            text = valid_report("money-craft.report.v1", "research")
+            text = text.replace(
+                "## 重大披露与期后事项\n已按条件路由核对重大披露与期后事项 [S11]\n",
+                "",
+            )
+            path.write_text(text, encoding="utf-8")
+            checks = research_run.document_audits(path, example_plan(), "money-craft.report.v1")
+            self.assertFalse(checks["valid"])
+            self.assertTrue(
+                any("重大披露与期后事项" in item for item in checks["report"]["errors"]),
+                checks["report"]["errors"],
+            )
+
+    def test_optional_material_disclosure_can_be_imported_without_blocking_default_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = self.initialize(directory)
+            status = research_run.research_status(workspace)
+            optional = {item["id"]: item for item in status["official_results"] if not item["required"]}
+            self.assertEqual(set(optional), {"S18", "S19", "S20"})
+            self.assertTrue(all(item["status"] == "optional-not-imported" for item in optional.values()))
+            source = Path(directory) / "material.html"
+            source.write_text("<!doctype html><html><body>fixture</body></html>", encoding="utf-8")
+            imported = research_run.import_official_source(
+                workspace,
+                source_id="S18",
+                source_file=source,
+                url="https://example.invalid/material-event",
+                retrieved_on="2026-08-23",
+            )
+            self.assertEqual(imported["kind"], "official-material")
+            self.assertTrue(imported["local_path"].endswith(".html"))
+            self.collect(workspace)
+            self.import_official_sources(workspace, directory)
+            (workspace / "report.md").write_text(
+                valid_report("money-craft.report.v1", "research"), encoding="utf-8"
+            )
+            (workspace / "thesis.md").write_text(
+                valid_report("money-craft.thesis.v1", "thesis"), encoding="utf-8"
+            )
+            optional_reconciliation = valid_reconciliation()
+            optional_reconciliation["material_disclosure_assessment"][0]["status"] = "imported"
+            optional_reconciliation["material_disclosure_assessment"][0]["notes"] = (
+                "A decision-critical material transaction disclosure was imported."
+            )
+            (workspace / "financial-reconciliation.json").write_text(
+                json.dumps(optional_reconciliation, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            finalized = research_run.finalize_workspace(workspace)
+            self.assertTrue(finalized["valid"])
+            self.assertEqual(finalized["evidence_manifest"]["source_count"], 18)
+            manifest = json.loads((workspace / "evidence-manifest.json").read_text(encoding="utf-8"))
+            optional_source = next(item for item in manifest["sources"] if item["id"] == "S18")
+            self.assertEqual(optional_source["kind"], "official-material")
 
     def test_cli_disabled_provider_fails_before_collection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

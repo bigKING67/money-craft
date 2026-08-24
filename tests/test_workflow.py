@@ -87,7 +87,40 @@ class CompanyResearchPlanTests(unittest.TestCase):
             ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S14", "S15", "S16", "S17"],
         )
         self.assertEqual(plan["provider_operations"][3]["arguments"]["start"], "2021-08-23")
+        self.assertEqual(
+            [item["id"] for item in plan["official_evidence_requirements"]],
+            ["S11", "S12", "S13", "S18", "S19", "S20"],
+        )
+        self.assertEqual(
+            [item["id"] for item in plan["official_evidence_requirements"] if item["required"]],
+            ["S11", "S12", "S13"],
+        )
+        self.assertEqual(
+            plan["reconciliation_contract"]["required_checks"],
+            ["balance-sheet-equation", "cash-balance-tie"],
+        )
         self.assertFalse(plan["execution_boundary"]["network_used"])
+
+    def test_plan_requires_quarter_derivation_after_q1(self) -> None:
+        plan = workflow.company_research_plan(
+            security="贵州茅台",
+            thscode="600519.SH",
+            as_of="2026-08-23",
+            latest_report="2026-2",
+            provider={"mode": "disabled", "configured": False, "network_checked": False},
+            today=dt.date(2026, 8, 23),
+        )
+        self.assertEqual(
+            plan["reconciliation_contract"]["required_checks"],
+            ["balance-sheet-equation", "cash-balance-tie", "quarter-from-ytd"],
+        )
+        self.assertEqual(
+            plan["reconciliation_contract"]["period_basis"],
+            [
+                {"role": "current", "period": "2026-2"},
+                {"role": "comparison", "period": "2025-2"},
+            ],
+        )
 
     def test_plan_rejects_report_period_after_as_of(self) -> None:
         with self.assertRaisesRegex(workflow.WorkflowError, "ends after as_of"):

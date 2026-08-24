@@ -121,6 +121,35 @@ def validate() -> dict[str, Any]:
             for target in mapping["targets"]:
                 if not (ROOT / target).is_file():
                     errors.append(f"missing absorbed target: {target}")
+        for review in upstream.get("reviews", []):
+            if not isinstance(review, dict) or not all(
+                isinstance(review.get(key), str) and re.fullmatch(r"[0-9a-f]{40}", review[key])
+                for key in ("from_commit", "through_commit")
+            ):
+                errors.append("upstream review range must use fixed 40-character commits")
+                continue
+            if review.get("disposition") != "pin-retained-report-only":
+                errors.append("unsupported upstream review disposition")
+            if review.get("changed_scope") != ["reports/"] or review.get("mapped_source_changes") != 0:
+                errors.append("report-only upstream review scope is inconsistent")
+            observations = review.get("mechanism_observations")
+            if not isinstance(observations, list) or not observations:
+                errors.append("upstream review must record mechanism observations")
+                continue
+            for observation in observations:
+                if not isinstance(observation, dict):
+                    errors.append("upstream mechanism observation must be an object")
+                    continue
+                if observation.get("classification") != "reimplemented":
+                    errors.append("upstream report mechanisms must be reimplemented, not copied")
+                sources = observation.get("sources")
+                if not isinstance(sources, list) or not sources or any(
+                    not isinstance(path, str) or not path.startswith("reports/") for path in sources
+                ):
+                    errors.append("upstream mechanism sources must remain under reports/")
+                targets = observation.get("targets")
+                if not isinstance(targets, list) or not targets or any(not (ROOT / path).is_file() for path in targets):
+                    errors.append("upstream mechanism observation target is missing")
         if not errors:
             checks.append("source-provenance")
     except (OSError, json.JSONDecodeError, KeyError, StopIteration, TypeError) as exc:

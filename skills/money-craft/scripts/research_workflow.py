@@ -90,6 +90,10 @@ def company_research_plan(
     history_start = shift_years(research_date, -5).isoformat()
     month_start = research_date.replace(day=1).isoformat()
     exchange = {"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}[code[-2:]]
+    comparison_period = f"{report_year - 1}-{report_quarter}"
+    reconciliation_checks = ["balance-sheet-equation", "cash-balance-tie"]
+    if report_quarter > 1:
+        reconciliation_checks.append("quarter-from-ytd")
 
     operations = [
         {"id": "S01", "operation": "search", "arguments": {"query": code[:6], "limit": 3}},
@@ -176,17 +180,90 @@ def company_research_plan(
             {"id": "provider-cross-check", "gate": "bounded operations captured or gaps declared"},
             {"id": "research", "gate": "facts separated from inference and counterevidence retained"},
             {"id": "valuation-and-thesis", "gate": "three scenarios and testable assumptions"},
-            {"id": "audit", "gate": "report and financial audits both valid"},
+            {"id": "audit", "gate": "report, financial, and reconciliation audits valid"},
         ],
         "official_evidence_requirements": [
-            {"id": "S11", "role": "latest-period formal filing", "period": latest_report},
-            {"id": "S12", "role": "latest audited annual report", "period": annual_report},
-            {"id": "S13", "role": "exchange disclosure or issuer investor-relations index", "period": None},
+            {"id": "S11", "role": "latest-period formal filing", "period": latest_report, "required": True},
+            {"id": "S12", "role": "latest audited annual report", "period": annual_report, "required": True},
+            {
+                "id": "S13",
+                "role": "exchange disclosure or issuer investor-relations index",
+                "period": None,
+                "required": True,
+            },
+            {
+                "id": "S18",
+                "role": "material transaction, subsidiary finance, equity incentive or capital-structure disclosure",
+                "period": None,
+                "required": False,
+                "trigger": "decision-critical subsidiary, governance, dilution, or contingent-obligation fact",
+            },
+            {
+                "id": "S19",
+                "role": "official management Q&A or roadshow transcript",
+                "period": None,
+                "required": False,
+                "trigger": "management explanation or an unanswered material question affects the thesis",
+            },
+            {
+                "id": "S20",
+                "role": "post-reporting-period material event disclosure",
+                "period": None,
+                "required": False,
+                "trigger": (
+                    "financing, listing, acquisition, disposal, repurchase, "
+                    "or other material event after period end"
+                ),
+            },
         ],
+        "material_disclosure_contract": {
+            "policy": "conditional",
+            "index_source_id": "S13",
+            "routes": [
+                {
+                    "source_id": "S18",
+                    "source_types": [
+                        "material transaction",
+                        "subsidiary capital increase",
+                        "equity incentive",
+                        "capital raising",
+                        "related-party transaction",
+                    ],
+                },
+                {
+                    "source_id": "S19",
+                    "source_types": ["earnings briefing", "roadshow transcript", "official management Q&A"],
+                },
+                {
+                    "source_id": "S20",
+                    "source_types": ["post-reporting-period material announcement"],
+                },
+            ],
+            "completion_rule": (
+                "Import each triggered optional source; resolve every route in the reconciliation artifact and report."
+            ),
+        },
+        "reconciliation_contract": {
+            "schema": "money-craft.financial-reconciliation.v1",
+            "path": "financial-reconciliation.json",
+            "audit_path": "financial-reconciliation-audit.json",
+            "required": True,
+            "required_checks": reconciliation_checks,
+            "material_disclosure_source_ids": ["S18", "S19", "S20"],
+            "period_basis": [
+                {"role": "current", "period": latest_report},
+                {"role": "comparison", "period": comparison_period},
+            ],
+        },
         "provider_operations": operations,
         "artifact_contract": {
             "report": {"path": "report.md", "schema": "money-craft.report.v1"},
             "thesis": {"path": "thesis.md", "schema": "money-craft.thesis.v1"},
+            "financial_reconciliation": {
+                "path": "financial-reconciliation.json",
+                "schema": "money-craft.financial-reconciliation.v1",
+                "audit_path": "financial-reconciliation-audit.json",
+            },
             "evidence_manifest": {
                 "path": "evidence-manifest.json",
                 "schema": "money-craft.public-evidence-manifest.v1",
@@ -197,6 +274,7 @@ def company_research_plan(
                 "report-financial-audit.json",
                 "thesis-audit.json",
                 "thesis-financial-audit.json",
+                "financial-reconciliation-audit.json",
             ],
         },
         "completion_gate": {
@@ -204,6 +282,7 @@ def company_research_plan(
             "provider_is_primary_source": False,
             "report_audit_required": True,
             "financial_audit_required": True,
+            "financial_reconciliation_required": True,
             "raw_provider_payloads_public": False,
         },
     }

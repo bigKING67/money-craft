@@ -43,9 +43,10 @@ python3 skills/money-craft/scripts/money_craft.py research plan \
   --provider-mode auto --json
 ```
 
-The plan binds the identity, dates, official-evidence requirements, bounded
-Fuyao operation matrix, expected artifacts, and audit gates. It does not access
-the network, create a report, or claim that any stage has completed.
+The plan binds the identity, dates, mandatory and conditional official-evidence
+requirements, bounded Fuyao operation matrix, financial-reconciliation
+contract, expected artifacts, and audit gates. It does not access the network,
+create a report, or claim that any stage has completed.
 
 Create a resumable local research run from that same plan contract:
 
@@ -71,6 +72,7 @@ archive without pretending that the run is a sealed report:
         │   ├── case.json
         │   ├── run-state.json
         │   ├── evidence/
+        │   ├── financial-reconciliation.json
         │   ├── report.md
         │   └── thesis.md
         ├── .working/<investment-run-id>/  # formal archive staging, managed separately
@@ -107,12 +109,28 @@ python3 skills/money-craft/scripts/money_craft.py research finalize \
   --workspace <workspace-returned-by-init> --json
 ```
 
+`S11/S12/S13` are mandatory. `S18`, `S19`, and `S20` are conditional slots for
+material transaction or capital-structure disclosures, official management
+Q&A, and post-reporting-period material events. They do not block a run when
+irrelevant, but must be imported when the corresponding fact affects the
+research conclusion. Each route must also be resolved as `not-triggered` or
+`imported` in `financial-reconciliation.json`; a mismatch with the captured
+evidence fails finalization.
+
+Before finalization, complete and audit the generated reconciliation artifact:
+
+```bash
+python3 skills/money-craft/scripts/money_craft.py audit reconciliation \
+  <workspace-returned-by-init>/financial-reconciliation.json --json
+```
+
 The import copies a bounded PDF or HTML snapshot, records its HTTPS source,
 and binds its SHA-256 without retaining the input path. `status` is offline and
-recomputes provider, official-source, report, thesis, manifest, audit, and
-receipt state from the workspace. `finalize` requires terminal evidence,
-builds a metadata-only manifest, runs all four report/thesis audits, and writes
-an immutable completion receipt only when every audit passes. Provider gaps
+recomputes provider, official-source, reconciliation, report, thesis, manifest,
+audit, and receipt state from the workspace. `finalize` requires terminal
+evidence, builds a metadata-only manifest, runs all four report/thesis audits
+plus the reconciliation audit, and writes an immutable completion receipt only
+when every audit passes. Provider gaps
 remain explicit limitations; none of these commands access an account or place
 a trade. Explicit repository-local workspaces must stay under the ignored
 `local/research/` tree. The archive `.research/` run is private working state,
@@ -270,5 +288,7 @@ python3 scripts/upstream_status.py --fetch --json
 
 The command is read-only with respect to Money Craft source. Review each change
 and update `sources.lock.json` only when it is intentionally absorbed, deferred,
-or classified as irrelevant. Never auto-merge upstream changes into the
-canonical skill.
+or classified as irrelevant. A report-only review is recorded under `reviews`
+with a fixed `through_commit`; it advances the review baseline without moving
+the submodule pin or pretending report content was absorbed. Never auto-merge
+upstream changes into the canonical skill.

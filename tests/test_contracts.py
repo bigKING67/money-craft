@@ -39,6 +39,8 @@ class RepositoryContractTests(unittest.TestCase):
         schema_root = ROOT / "skills" / "money-craft" / "schemas"
         expected = {
             "company-research-plan.schema.json": "money-craft.company-research-plan.v1",
+            "financial-reconciliation.schema.json": "money-craft.financial-reconciliation.v1",
+            "financial-reconciliation-audit.schema.json": "money-craft.financial-reconciliation-audit.v1",
             "official-import.schema.json": "money-craft.official-import.v1",
             "research-case.schema.json": "money-craft.research-case.v1",
             "research-collection.schema.json": "money-craft.research-collection.v1",

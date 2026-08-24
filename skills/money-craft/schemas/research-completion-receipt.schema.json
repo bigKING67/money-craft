@@ -22,7 +22,7 @@
     "bindings": {
       "type": "object",
       "minProperties": 9,
-      "maxProperties": 9,
+      "maxProperties": 11,
       "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
     },
     "provider_gaps": {"type": "array", "items": {"type": "string"}},

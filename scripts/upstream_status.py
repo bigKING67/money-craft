@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report pinned, reviewed, absorbed, local, and remote AI Berkshire commits."""
+"""Report pinned, absorbed, classified-review, local, and remote upstream commits."""
 
 from __future__ import annotations
 
@@ -51,14 +51,18 @@ def build_status(fetch: bool) -> dict[str, Any]:
     local = git("rev-parse", "HEAD")
     remote = git("rev-parse", "origin/main")
     reviewed = entry["reviewed_commit"]
-    changed_files = [] if remote == reviewed else git("diff", "--name-only", f"{reviewed}..{remote}").splitlines()
+    reviews = entry.get("reviews", [])
+    review_baseline = reviews[-1]["through_commit"] if reviews else reviewed
+    changed_files = (
+        [] if remote == review_baseline else git("diff", "--name-only", f"{review_baseline}..{remote}").splitlines()
+    )
     categories: dict[str, int] = {}
     for path in changed_files:
         key = category(path)
         categories[key] = categories.get(key, 0) + 1
     if local != entry["pinned_commit"]:
         state = "submodule_mismatch"
-    elif remote != reviewed:
+    elif remote != review_baseline:
         state = "review_required"
     else:
         state = "current"
@@ -68,6 +72,7 @@ def build_status(fetch: bool) -> dict[str, Any]:
         "fetched": fetch,
         "pinned_commit": entry["pinned_commit"],
         "reviewed_commit": reviewed,
+        "review_baseline_commit": review_baseline,
         "absorbed_commit": entry["absorbed_commit"],
         "local_commit": local,
         "remote_commit": remote,
@@ -95,4 +100,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

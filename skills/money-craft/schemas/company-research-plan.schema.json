@@ -14,6 +14,8 @@
     "execution_boundary",
     "stages",
     "official_evidence_requirements",
+    "material_disclosure_contract",
+    "reconciliation_contract",
     "provider_operations",
     "artifact_contract",
     "completion_gate"
@@ -41,6 +43,8 @@
     "execution_boundary": {"type": "object"},
     "stages": {"type": "array", "minItems": 6, "items": {"type": "object"}},
     "official_evidence_requirements": {"type": "array", "minItems": 3, "items": {"type": "object"}},
+    "material_disclosure_contract": {"type": "object"},
+    "reconciliation_contract": {"type": "object"},
     "provider_operations": {"type": "array", "minItems": 13, "items": {"type": "object"}},
     "artifact_contract": {"type": "object"},
     "completion_gate": {"type": "object"}

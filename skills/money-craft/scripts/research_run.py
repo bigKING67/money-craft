@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import financial_rigor
+import financial_reconciliation
 import report_audit
 import research_workflow
 
@@ -42,7 +43,7 @@ MAX_STATE_EVENTS = 1000
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OUTPUT_ROOT_ENV = "MONEY_CRAFT_OUTPUT_ROOT"
 DEFAULT_OUTPUT_ROOT_RELATIVE = Path("Documents") / "sixseven" / "money"
-RECEIPT_BOUND_FILES = {
+BASE_RECEIPT_BOUND_FILES = {
     "plan.json",
     "case.json",
     "evidence-manifest.json",
@@ -52,6 +53,10 @@ RECEIPT_BOUND_FILES = {
     "report-financial-audit.json",
     "thesis-audit.json",
     "thesis-financial-audit.json",
+}
+RECONCILIATION_BOUND_FILES = {
+    "financial-reconciliation.json",
+    "financial-reconciliation-audit.json",
 }
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -281,16 +286,25 @@ def derived_case(plan: dict[str, Any], plan_sha256: str) -> dict[str, Any]:
         role = item.get("role")
         if not isinstance(role, str) or not role:
             raise ResearchRunError("invalid_plan", f"{source_id}.role is required")
-        kind = "official-index" if "index" in role else "official-document"
-        official_sources.append(
-            {
-                "id": source_id,
-                "role": role,
-                "period": item.get("period"),
-                "kind": kind,
-                "status": "pending",
-            }
-        )
+        required = item.get("required", True)
+        if not isinstance(required, bool):
+            raise ResearchRunError("invalid_plan", f"{source_id}.required must be boolean")
+        trigger = item.get("trigger")
+        if trigger is not None and (not isinstance(trigger, str) or not trigger.strip()):
+            raise ResearchRunError("invalid_plan", f"{source_id}.trigger must be non-empty text")
+        kind = "official-index" if "index" in role else ("official-document" if required else "official-material")
+        source = {
+            "id": source_id,
+            "role": role,
+            "period": item.get("period"),
+            "kind": kind,
+            "status": "pending",
+        }
+        if "required" in item:
+            source["required"] = required
+        if trigger is not None:
+            source["trigger"] = trigger.strip()
+        official_sources.append(source)
     return {
         "schema": CASE_SCHEMA,
         "plan_sha256": plan_sha256,
@@ -300,6 +314,90 @@ def derived_case(plan: dict[str, Any], plan_sha256: str) -> dict[str, Any]:
         "operations": case_operations,
         "official_sources": official_sources,
     }
+
+
+def reconciliation_contract(plan: dict[str, Any]) -> dict[str, Any] | None:
+    contract = plan.get("reconciliation_contract")
+    if contract is None:
+        return None
+    if not isinstance(contract, dict):
+        raise ResearchRunError("invalid_plan", "reconciliation_contract must be an object")
+    if (
+        contract.get("schema") != financial_reconciliation.SCHEMA
+        or contract.get("path") != "financial-reconciliation.json"
+        or contract.get("audit_path") != "financial-reconciliation-audit.json"
+        or contract.get("required") is not True
+    ):
+        raise ResearchRunError("invalid_plan", "reconciliation_contract has an unsupported identity")
+    checks = contract.get("required_checks")
+    if (
+        not isinstance(checks, list)
+        or not checks
+        or any(item not in financial_reconciliation.CHECK_INPUTS for item in checks)
+    ):
+        raise ResearchRunError("invalid_plan", "reconciliation_contract.required_checks is invalid")
+    disclosure_source_ids = contract.get("material_disclosure_source_ids")
+    if disclosure_source_ids != ["S18", "S19", "S20"]:
+        raise ResearchRunError("invalid_plan", "reconciliation_contract material disclosure sources are invalid")
+    basis = contract.get("period_basis")
+    if not isinstance(basis, list) or len(basis) != 2:
+        raise ResearchRunError("invalid_plan", "reconciliation_contract.period_basis is invalid")
+    return contract
+
+
+def reconciliation_template(plan: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
+    identity = plan["identity"]
+    return {
+        "schema": financial_reconciliation.SCHEMA,
+        "security": identity["security"],
+        "thscode": identity["thscode"],
+        "as_of": plan["as_of"],
+        "base_currency": "CNY",
+        "required_checks": contract["required_checks"],
+        "period_basis": [
+            {
+                "role": item["role"],
+                "period": item["period"],
+                "basis": "unverified",
+                "source_ids": ["S11"],
+                "notes": "Confirm whether the source presents reported, restated, or comparable-estimate figures.",
+            }
+            for item in contract["period_basis"]
+        ],
+        "restatement_assessment": {
+            "status": "unverified",
+            "source_ids": ["S11", "S12"],
+            "notes": "Inspect the formal filing and notes for retrospective restatement or accounting correction.",
+        },
+        "material_disclosure_assessment": [
+            {
+                "source_id": source_id,
+                "status": "unverified",
+                "notes": "Resolve whether this conditional disclosure route was triggered.",
+            }
+            for source_id in contract["material_disclosure_source_ids"]
+        ],
+        "checks": [],
+        "presentation_to_economics": {
+            "status": "unverified",
+            "source_ids": ["S11"],
+            "notes": "Resolve material accounting presentation effects before finalization.",
+            "items": [],
+        },
+        "subsequent_events": {
+            "status": "unverified",
+            "source_ids": ["S11", "S13"],
+            "notes": "Search official post-reporting-period disclosures and resolve material events.",
+            "items": [],
+        },
+    }
+
+
+def receipt_bound_files(plan: dict[str, Any]) -> set[str]:
+    files = set(BASE_RECEIPT_BOUND_FILES)
+    if reconciliation_contract(plan) is not None:
+        files.update(RECONCILIATION_BOUND_FILES)
+    return files
 
 
 def render_draft(template: str, plan: dict[str, Any]) -> str:
@@ -366,6 +464,9 @@ def initialize_workspace(
         for name in ("report.md", "thesis.md"):
             template = (template_root / name).read_text(encoding="utf-8")
             atomic_bytes(staging / name, render_draft(template, plan).encode("utf-8"), replace=False)
+        contract = reconciliation_contract(plan)
+        if contract is not None:
+            atomic_json(staging / contract["path"], reconciliation_template(plan, contract), replace=False)
         os.replace(staging, root)
     except Exception:
         if staging.exists():
@@ -379,6 +480,7 @@ def initialize_workspace(
         "plan_sha256": plan_sha256,
         "provider_operation_count": len(case["operations"]),
         "official_source_count": len(case["official_sources"]),
+        "reconciliation_required": reconciliation_contract(plan) is not None,
         "network_used": False,
     }
 
@@ -419,7 +521,9 @@ def load_workspace(workspace: Path | str) -> tuple[Path, dict[str, Any], dict[st
     if not isinstance(actual_official, list) or len(actual_official) != len(expected_case["official_sources"]):
         raise ResearchRunError("case_drift", "official source requirements no longer match plan.json")
     for expected, actual in zip(expected_case["official_sources"], actual_official):
-        if not isinstance(actual, dict) or any(actual.get(key) != value for key, value in expected.items() if key != "status"):
+        if not isinstance(actual, dict) or any(
+            actual.get(key) != value for key, value in expected.items() if key != "status"
+        ):
             raise ResearchRunError("case_drift", "official source identity no longer matches plan.json")
         if actual.get("status") not in {"pending", "imported"}:
             raise ResearchRunError("invalid_case", f"{expected['id']}.status is invalid")
@@ -635,7 +739,7 @@ def validate_https_url(value: str) -> str:
     return value
 
 
-def validate_official_file(path: Path, kind: str) -> int:
+def validate_official_file(path: Path, kind: str) -> tuple[int, str]:
     try:
         metadata = path.lstat()
     except FileNotFoundError as exc:
@@ -646,11 +750,17 @@ def validate_official_file(path: Path, kind: str) -> int:
         raise ResearchRunError("invalid_official_source", "official source size is outside the allowed range")
     with path.open("rb") as handle:
         prefix = handle.read(1024).lstrip().lower()
-    if kind == "official-document" and not prefix.startswith(b"%pdf-"):
+    is_pdf = prefix.startswith(b"%pdf-")
+    is_html = b"<" in prefix
+    if kind == "official-document" and not is_pdf:
         raise ResearchRunError("invalid_official_source", "official document is not a PDF")
-    if kind == "official-index" and b"<" not in prefix:
+    if kind == "official-index" and not is_html:
         raise ResearchRunError("invalid_official_source", "official index is not HTML")
-    return metadata.st_size
+    if kind == "official-material" and not (is_pdf or is_html):
+        raise ResearchRunError("invalid_official_source", "optional official material must be PDF or HTML")
+    if kind not in {"official-document", "official-index", "official-material"}:
+        raise ResearchRunError("invalid_official_source", f"unsupported official source kind: {kind}")
+    return metadata.st_size, ".pdf" if is_pdf else ".html"
 
 
 def import_official_source(
@@ -672,7 +782,7 @@ def import_official_source(
         raise ResearchRunError("existing_artifact", f"official source already imported: {source_id}")
     kind = source["kind"]
     source_file = Path(os.path.abspath(source_file.expanduser()))
-    size = validate_official_file(source_file, kind)
+    size, suffix = validate_official_file(source_file, kind)
     url = validate_https_url(url)
     date_value = retrieved_on or dt.datetime.now(SHANGHAI).date().isoformat()
     try:
@@ -682,7 +792,6 @@ def import_official_source(
     resolved_title = title.strip() if isinstance(title, str) else f"{plan['identity']['security']} {source['role']}"
     if not resolved_title or len(resolved_title) > 256:
         raise ResearchRunError("invalid_official_source", "official source title must contain 1..256 characters")
-    suffix = ".pdf" if kind == "official-document" else ".html"
     relative = f"{source_id}-official{suffix}"
     destination = root / "evidence" / relative
     if destination.exists() or destination.is_symlink():
@@ -761,18 +870,34 @@ def inspect_official(root: Path, case: dict[str, Any]) -> tuple[list[dict[str, A
     pending: list[str] = []
     for item in case["official_sources"]:
         if item.get("status") == "pending":
-            pending.append(item["id"])
-            results.append({"id": item["id"], "status": "pending"})
+            is_required = item.get("required", True)
+            if is_required:
+                pending.append(item["id"])
+            results.append(
+                {
+                    "id": item["id"],
+                    "status": "pending" if is_required else "optional-not-imported",
+                    "required": is_required,
+                    "trigger": item.get("trigger"),
+                }
+            )
             continue
-        required = ("title", "url", "retrieved_on", "local_path", "sha256", "bytes")
-        if any(key not in item for key in required):
+        metadata_fields = ("title", "url", "retrieved_on", "local_path", "sha256", "bytes")
+        if any(key not in item for key in metadata_fields):
             raise ResearchRunError("invalid_case", f"{item['id']} imported metadata is incomplete")
         validate_https_url(str(item["url"]))
         path = root / "evidence" / str(item["local_path"])
         validate_official_file(path, str(item["kind"]))
         if sha256_file(path) != item["sha256"] or path.stat().st_size != item["bytes"]:
             raise ResearchRunError("evidence_drift", f"official evidence changed after import: {item['id']}")
-        results.append({"id": item["id"], "status": "imported", "sha256": item["sha256"]})
+        results.append(
+            {
+                "id": item["id"],
+                "status": "imported",
+                "required": item.get("required", True),
+                "sha256": item["sha256"],
+            }
+        )
     return results, pending
 
 
@@ -803,10 +928,52 @@ def document_audits(path: Path, plan: dict[str, Any], schema: str) -> dict[str, 
             report_result = dict(report_result)
             report_result["valid"] = False
             report_result["errors"] = [*report_result.get("errors", []), str(exc)]
-    return {"report": report_result, "financial": financial_result, "valid": report_result["valid"] and financial_result["valid"]}
+    if schema == "money-craft.report.v1" and reconciliation_contract(plan) is not None and path.is_file():
+        text = path.read_text(encoding="utf-8")
+        reconciliation_errors: list[str] = []
+        for heading in ("重大披露与期后事项", "重述口径与三表勾稽"):
+            section = report_audit.extract_section(text, heading)
+            if not section.strip():
+                reconciliation_errors.append(f"missing or empty required section: {heading}")
+            elif not re.search(r"\[S\d{2,4}\]", section):
+                reconciliation_errors.append(f"{heading} must cite at least one [S#] source")
+        if reconciliation_errors:
+            report_result = dict(report_result)
+            report_result["valid"] = False
+            report_result["errors"] = [*report_result.get("errors", []), *reconciliation_errors]
+    return {
+        "report": report_result,
+        "financial": financial_result,
+        "valid": report_result["valid"] and financial_result["valid"],
+    }
 
 
-def receipt_status(root: Path, plan_sha256: str) -> tuple[bool, str | None]:
+def reconciliation_audit(root: Path, plan: dict[str, Any], case: dict[str, Any]) -> dict[str, Any] | None:
+    contract = reconciliation_contract(plan)
+    if contract is None:
+        return None
+    allowed_source_ids: set[str] = set()
+    for item in case["operations"]:
+        normalized = root / "evidence" / item["output"]
+        if normalized.is_file() and not normalized.is_symlink():
+            payload = normalized_payload(normalized)
+            status, _error = operation_status(item, payload, 0 if payload.get("ok") is True else 1)
+            if status == "passed":
+                allowed_source_ids.add(item["id"])
+    allowed_source_ids.update(item["id"] for item in case["official_sources"] if item.get("status") == "imported")
+    return financial_reconciliation.audit_file(
+        root / contract["path"],
+        expected_contract=contract,
+        expected_identity={
+            "security": plan["identity"]["security"],
+            "thscode": plan["identity"]["thscode"],
+            "as_of": plan["as_of"],
+        },
+        allowed_source_ids=allowed_source_ids,
+    )
+
+
+def receipt_status(root: Path, plan: dict[str, Any], plan_sha256: str) -> tuple[bool, str | None]:
     path = root / "completion-receipt.json"
     if not path.is_file() or path.is_symlink():
         return False, None
@@ -816,7 +983,7 @@ def receipt_status(root: Path, plan_sha256: str) -> tuple[bool, str | None]:
     bindings = receipt.get("bindings")
     if not isinstance(bindings, dict):
         return False, "completion receipt bindings are missing"
-    if set(bindings) != RECEIPT_BOUND_FILES:
+    if set(bindings) != receipt_bound_files(plan):
         return False, "completion receipt binding allowlist is invalid"
     for name, expected_hash in bindings.items():
         if not isinstance(name, str) or not isinstance(expected_hash, str):
@@ -834,15 +1001,18 @@ def research_status(workspace: Path | str) -> dict[str, Any]:
     provider_stage = "pending"
     if len(provider_pending) < len(case["operations"]):
         provider_stage = "incomplete" if provider_pending else ("complete_with_gaps" if provider_gaps else "complete")
-    official_stage = "pending" if len(official_pending) == len(case["official_sources"]) else (
+    required_official_count = sum(1 for item in case["official_sources"] if item.get("required", True))
+    official_stage = "pending" if len(official_pending) == required_official_count else (
         "incomplete" if official_pending else "complete"
     )
     report_checks = document_audits(root / "report.md", plan, "money-craft.report.v1")
     thesis_checks = document_audits(root / "thesis.md", plan, "money-craft.thesis.v1")
+    reconciliation_checks = reconciliation_audit(root, plan, case)
+    reconciliation_valid = reconciliation_checks is None or reconciliation_checks["valid"]
     report_stage = "complete" if report_checks["valid"] else "draft"
     thesis_stage = "complete" if thesis_checks["valid"] else "draft"
     plan_sha256 = sha256_file(root / "plan.json")
-    receipt_valid, receipt_error = receipt_status(root, plan_sha256)
+    receipt_valid, receipt_error = receipt_status(root, plan, plan_sha256)
     manifest_exists = (root / "evidence-manifest.json").is_file()
     ready_for_report = not provider_pending and not official_pending
     complete = (
@@ -850,6 +1020,7 @@ def research_status(workspace: Path | str) -> dict[str, Any]:
         and ready_for_report
         and report_checks["valid"]
         and thesis_checks["valid"]
+        and reconciliation_valid
         and manifest_exists
     )
     warnings = []
@@ -857,6 +1028,8 @@ def research_status(workspace: Path | str) -> dict[str, Any]:
         warnings.append("provider gaps are declared evidence limitations and must be addressed in the report")
     if receipt_error:
         warnings.append(receipt_error)
+    if reconciliation_checks is not None and not reconciliation_checks["valid"]:
+        warnings.append("financial reconciliation is incomplete or invalid")
     return {
         "schema": STATUS_SCHEMA,
         "valid": True,
@@ -870,7 +1043,16 @@ def research_status(workspace: Path | str) -> dict[str, Any]:
             "official_evidence": official_stage,
             "report": report_stage,
             "thesis": thesis_stage,
-            "audit": "complete" if report_checks["valid"] and thesis_checks["valid"] else "pending",
+            "financial_reconciliation": (
+                "not-required-legacy"
+                if reconciliation_checks is None
+                else ("complete" if reconciliation_checks["valid"] else "draft")
+            ),
+            "audit": (
+                "complete"
+                if report_checks["valid"] and thesis_checks["valid"] and reconciliation_valid
+                else "pending"
+            ),
             "manifest": "complete" if manifest_exists else "pending",
             "receipt": "complete" if receipt_valid else "pending",
         },
@@ -878,6 +1060,7 @@ def research_status(workspace: Path | str) -> dict[str, Any]:
         "provider_gaps": provider_gaps,
         "provider_results": provider_results,
         "official_results": official_results,
+        "reconciliation": reconciliation_checks,
         "ready_for_report": ready_for_report,
         "complete": complete,
         "network_used_by_status": False,
@@ -922,7 +1105,7 @@ def provider_source(root: Path, item: dict[str, Any]) -> dict[str, Any]:
 
 def official_source(root: Path, item: dict[str, Any]) -> dict[str, Any]:
     path = root / "evidence" / item["local_path"]
-    role = "downloaded-document" if item["kind"] == "official-document" else "web-snapshot"
+    role = "downloaded-document" if path.suffix.lower() == ".pdf" else "web-snapshot"
     return {
         "id": item["id"],
         "kind": item["kind"],
@@ -936,7 +1119,7 @@ def official_source(root: Path, item: dict[str, Any]) -> dict[str, Any]:
 
 def build_manifest(root: Path, plan: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
     sources = [provider_source(root, item) for item in case["operations"]]
-    sources.extend(official_source(root, item) for item in case["official_sources"])
+    sources.extend(official_source(root, item) for item in case["official_sources"] if item.get("status") == "imported")
     retrieved = [item.get("retrieved_at") for item in sources if isinstance(item.get("retrieved_at"), str)]
     return {
         "schema": MANIFEST_SCHEMA,
@@ -970,19 +1153,24 @@ def finalize_workspace(workspace: Path | str) -> dict[str, Any]:
     atomic_json(root / "evidence-manifest.json", manifest)
     report_checks = document_audits(root / "report.md", plan, "money-craft.report.v1")
     thesis_checks = document_audits(root / "thesis.md", plan, "money-craft.thesis.v1")
+    reconciliation_checks = reconciliation_audit(root, plan, case)
+    reconciliation_valid = reconciliation_checks is None or reconciliation_checks["valid"]
     audit_payloads = {
         "report-audit.json": report_checks["report"],
         "report-financial-audit.json": report_checks["financial"],
         "thesis-audit.json": thesis_checks["report"],
         "thesis-financial-audit.json": thesis_checks["financial"],
     }
+    contract = reconciliation_contract(plan)
+    if contract is not None and reconciliation_checks is not None:
+        audit_payloads[contract["audit_path"]] = reconciliation_checks
     for name, payload in audit_payloads.items():
         atomic_json(root / name, payload)
-    valid = report_checks["valid"] and thesis_checks["valid"]
+    valid = report_checks["valid"] and thesis_checks["valid"] and reconciliation_valid
     receipt_path = root / "completion-receipt.json"
     receipt: dict[str, Any] | None = None
     if valid:
-        bindings = {name: sha256_file(root / name) for name in sorted(RECEIPT_BOUND_FILES)}
+        bindings = {name: sha256_file(root / name) for name in sorted(receipt_bound_files(plan))}
         candidate = {
             "schema": RECEIPT_SCHEMA,
             "valid": True,
@@ -1006,7 +1194,10 @@ def finalize_workspace(workspace: Path | str) -> dict[str, Any]:
                 root,
                 state,
                 "finalized",
-                {"manifest_sha256": bindings["evidence-manifest.json"], "provider_gap_count": len(status["provider_gaps"])},
+                {
+                    "manifest_sha256": bindings["evidence-manifest.json"],
+                    "provider_gap_count": len(status["provider_gaps"]),
+                },
             )
     return {
         "schema": FINALIZE_SCHEMA,
@@ -1020,6 +1211,7 @@ def finalize_workspace(workspace: Path | str) -> dict[str, Any]:
         "audits": {
             "report": report_checks,
             "thesis": thesis_checks,
+            "financial_reconciliation": reconciliation_checks,
         },
         "provider_gaps": status["provider_gaps"],
         "receipt": (
