@@ -1403,31 +1403,6 @@ tbody tr:last-child td {
     line-height: 1.5;
   }
 
-  .report-main {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .decision-brief {
-    order: 1;
-  }
-
-  .visual-summary {
-    order: 2;
-  }
-
-  .report-article {
-    order: 3;
-  }
-
-  .visual-extended {
-    order: 4;
-  }
-
-  .audit-seal {
-    order: 5;
-  }
-
   .skip-link,
   .reading-progress,
   .theme-toggle,

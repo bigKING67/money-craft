@@ -225,10 +225,12 @@ class ReportRendererTests(unittest.TestCase):
         self.assertIn("word-break: keep-all", css)
         self.assertNotIn("box-shadow: 0", css)
         self.assertNotIn("backdrop-filter", css)
-        print_block = css[css.index("@media print") :]
-        self.assertIn("flex-direction: column", print_block)
-        self.assertIn(".report-article {\n    order: 3;", print_block)
-        self.assertIn(".visual-extended {\n    order: 4;", print_block)
+        template = report_renderer.DEFAULT_TEMPLATE.read_text(encoding="utf-8")
+        summary_at = template.index("{{VISUAL_SUMMARY}}")
+        article_at = template.index("{{ARTICLE}}")
+        extended_at = template.index("{{VISUAL_EXTENDED}}")
+        self.assertLess(summary_at, article_at)
+        self.assertLess(article_at, extended_at)
 
     def test_audit_seal_uses_reader_chinese(self) -> None:
         parsed = report_renderer.parse_report(SAMPLE_REPORT)
@@ -335,14 +337,15 @@ class ReportRendererTests(unittest.TestCase):
         )
         self.assertEqual(chart_count, 5)  # 无 evidence manifest 时证据覆盖组件降级
         summary_start = document.index('<section class="visual-summary"')
+        article_start = document.index('<article class="report-article"')
         extended_start = document.index('<section class="visual-extended"')
-        # 模板结构：<main> 先开，两个视图 section 均嵌在 main 内、正文 article 之前
         main_start = document.index('<main id="report-content"')
         main_end = document.index("</main>")
         self.assertLess(main_start, summary_start)
-        self.assertLess(summary_start, extended_start)
+        self.assertLess(summary_start, article_start)
+        self.assertLess(article_start, extended_start)
         self.assertLess(extended_start, main_end)
-        primary = document[summary_start:extended_start]
+        primary = document[summary_start:article_start]
         extended = document[extended_start:main_end]
         self.assertEqual(primary.count("<figure"), 2)
         self.assertIn("financial-trends", primary)
@@ -368,8 +371,9 @@ class ReportRendererTests(unittest.TestCase):
             charts=True,
         )
         summary_start = document.index('<section class="visual-summary"')
+        article_start = document.index('<article class="report-article"')
         extended_start = document.index('<section class="visual-extended"')
-        primary = document[summary_start:extended_start]
+        primary = document[summary_start:article_start]
         extended = document[extended_start:]
         self.assertEqual(primary.count("<figure"), 1)
         self.assertIn('data-chart="valuation-scenarios"', primary)

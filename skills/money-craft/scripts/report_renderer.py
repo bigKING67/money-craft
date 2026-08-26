@@ -1256,14 +1256,14 @@ def build_document(
         '<section class="visual-summary" aria-label="核心数据视图">'
         + "".join(primary_parts)
         + "</section>"
-        + (
-            '<section class="visual-extended" aria-label="扩展数据视图">'
-            + "".join(extended_parts)
-            + "</section>"
-            if extended_parts
-            else ""
-        )
-        if visual_parts
+        if primary_parts
+        else ""
+    )
+    visual_extended = (
+        '<section class="visual-extended" aria-label="扩展数据视图">'
+        + "".join(extended_parts)
+        + "</section>"
+        if extended_parts
         else ""
     )
     description = conclusion_text(parsed)
@@ -1279,6 +1279,7 @@ def build_document(
             "NAVIGATION": build_navigation(headings),
             "DECISION_BRIEF": build_decision_brief(parsed),
             "VISUAL_SUMMARY": visual_summary,
+            "VISUAL_EXTENDED": visual_extended,
             "ARTICLE": rendered,
             "AUDIT_SEAL": build_audit_seal(
                 source_sha256, audit, evidence, revision, archive_manifest
