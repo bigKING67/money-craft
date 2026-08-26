@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 import research_run
+import report_renderer
 import tracking_workflow
 from research_workflow import WorkflowError, company_research_plan, prepare_thesis_update, thesis_diff
 
@@ -695,6 +697,27 @@ def build_parser() -> argparse.ArgumentParser:
     track_verify.add_argument("--tracking-root", required=True, type=Path)
     track_verify.add_argument("--no-require-read-only", action="store_true")
     track_verify.add_argument("--json", action="store_true")
+
+    report = subparsers.add_parser("report")
+    report_subparsers = report.add_subparsers(dest="report_command", required=True)
+    report_render = report_subparsers.add_parser("render")
+    report_render.add_argument("--source", required=True, type=Path)
+    report_render.add_argument("--output-dir", type=Path)
+    report_render.add_argument("--output-html", type=Path)
+    report_render.add_argument("--output-pdf", type=Path)
+    report_render.add_argument("--html-only", action="store_true")
+    report_render.add_argument("--theme", default=report_renderer.CANONICAL_THEME)
+    report_render.add_argument("--evidence-manifest", type=Path)
+    report_render.add_argument("--audit", type=Path)
+    report_render.add_argument("--revision-manifest", type=Path)
+    report_render.add_argument("--archive-manifest", type=Path)
+    report_render.add_argument("--no-charts", action="store_true")
+    report_render.add_argument("--json", action="store_true")
+    report_verify = report_subparsers.add_parser("verify")
+    report_verify.add_argument("--source", required=True, type=Path)
+    report_verify.add_argument("--html", required=True, type=Path)
+    report_verify.add_argument("--pdf", type=Path)
+    report_verify.add_argument("--json", action="store_true")
     return parser
 
 
@@ -723,8 +746,37 @@ def doctor_payload() -> dict[str, Any]:
             "skill_root": str(SKILL_ROOT),
             "canonical_files_present": all(
                 (SKILL_ROOT / path).is_file()
-                for path in ("SKILL.md", "VERSION", "scripts/money_craft.py")
+                for path in (
+                    "SKILL.md",
+                    "VERSION",
+                    "scripts/money_craft.py",
+                    "scripts/report_renderer.py",
+                    "reporting/report.html",
+                    "reporting/report.css",
+                    "reporting/report.js",
+                )
             ),
+        },
+        "report_renderer": {
+            "theme": report_renderer.CANONICAL_THEME,
+            "layout_mode": report_renderer.LAYOUT_MODE,
+            "assets_present": all(
+                path.is_file()
+                for path in (
+                    report_renderer.DEFAULT_TEMPLATE,
+                    report_renderer.DEFAULT_STYLE,
+                    report_renderer.DEFAULT_SCRIPT,
+                )
+            ),
+            "optional_dependencies": {
+                name: importlib.util.find_spec(module) is not None
+                for name, module in (
+                    ("markdown", "markdown"),
+                    ("weasyprint", "weasyprint"),
+                    ("pypdf", "pypdf"),
+                )
+            },
+            "network_checked": False,
         },
         "fuyao": {
             "configured": credential is not None,
@@ -841,6 +893,19 @@ Official facts change.
         if health["score"] != 7 or health["status"] != "WEAKENED":
             raise AssertionError("tracking health contract failed")
         checks.append("tracking-health-contract")
+        parsed_report = report_renderer.parse_report(sample)
+        if parsed_report.title != "Example":
+            raise AssertionError("report renderer parser failed")
+        if not all(
+            path.is_file()
+            for path in (
+                report_renderer.DEFAULT_TEMPLATE,
+                report_renderer.DEFAULT_STYLE,
+                report_renderer.DEFAULT_SCRIPT,
+            )
+        ):
+            raise AssertionError("report renderer assets are missing")
+        checks.append("report-renderer-assets")
     except Exception as exc:
         errors.append(sanitize_message(exc))
     return {
@@ -1122,6 +1187,49 @@ def run_track(args: argparse.Namespace) -> int:
     return 0 if result.get("valid", True) else EXIT_PROVIDER
 
 
+def run_report(args: argparse.Namespace) -> int:
+    try:
+        if args.report_command == "verify":
+            result = report_renderer.verify_rendered_report(
+                args.source.expanduser().resolve(),
+                args.html.expanduser().resolve(),
+                args.pdf.expanduser().resolve() if args.pdf else None,
+            )
+            print_json(result)
+            return 0 if result["valid"] else EXIT_PROVIDER
+        if args.report_command != "render":
+            raise WorkflowError("unsupported_workflow", "unsupported report command")
+        source = args.source.expanduser().resolve()
+        output_html, output_pdf = report_renderer.resolve_output_paths(
+            source,
+            output_dir=args.output_dir,
+            output_html=args.output_html,
+            output_pdf=args.output_pdf,
+            html_only=args.html_only,
+        )
+        result = report_renderer.render_report(
+            source,
+            output_html=output_html,
+            output_pdf=output_pdf,
+            evidence_manifest=args.evidence_manifest.expanduser().resolve()
+            if args.evidence_manifest
+            else None,
+            audit_path=args.audit.expanduser().resolve() if args.audit else None,
+            revision_manifest=args.revision_manifest.expanduser().resolve()
+            if args.revision_manifest
+            else None,
+            archive_manifest=args.archive_manifest.expanduser().resolve()
+            if args.archive_manifest
+            else None,
+            charts=not args.no_charts,
+            requested_theme=args.theme,
+        )
+    except report_renderer.ReportRenderError as exc:
+        raise WorkflowError("report_render_failed", sanitize_message(exc), exit_code=EXIT_CONFIG) from exc
+    print_json(result)
+    return 0
+
+
 def error_payload(
     exc: MoneyCraftError,
     operation: str | None = None,
@@ -1169,6 +1277,8 @@ def main() -> int:
             return run_thesis(args)
         if args.command == "track":
             return run_track(args)
+        if args.command == "report":
+            return run_report(args)
         raise MoneyCraftError("usage_error", "unsupported command", exit_code=EXIT_USAGE)
     except WorkflowError as exc:
         print_json(

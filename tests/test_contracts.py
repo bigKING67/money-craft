@@ -49,6 +49,8 @@ class RepositoryContractTests(unittest.TestCase):
             "research-init.schema.json": "money-craft.research-init.v1",
             "research-run-state.schema.json": "money-craft.research-run-state.v1",
             "research-status.schema.json": "money-craft.research-status.v1",
+            "report-render.schema.json": "money-craft.report-render.v1",
+            "report-render-verify.schema.json": "money-craft.report-render-verify.v1",
             "thesis-update-plan.schema.json": "money-craft.thesis-update-plan.v1",
             "thesis-diff.schema.json": "money-craft.thesis-diff.v1",
             "tracking-current.schema.json": "money-craft.tracking-current.v1",

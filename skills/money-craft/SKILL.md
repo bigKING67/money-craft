@@ -18,6 +18,7 @@ description: 对 A 股上市公司做证据优先的基本面筛选、公司研�
 - 将论文更新封存为公司级跟踪历史：[references/tracking-workflow.md](references/tracking-workflow.md)
 - 涉及任何财务、行情或估值数字：[references/financial-data-and-evidence.md](references/financial-data-and-evidence.md)
 - 使用 Fuyao 数据客户端：[references/providers/fuyao.md](references/providers/fuyao.md)
+- 生成或验收最终 HTML/PDF：[references/report-rendering.md](references/report-rendering.md)
 
 完整公司研究在身份和最新正式报告期明确后，先运行确定性的统一入口：
 
@@ -77,11 +78,19 @@ python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track init --tracking-ro
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track check --workspace <init返回的workspace> --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track status --tracking-root <公司目录>/tracking --json
 python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" track verify --tracking-root <公司目录>/tracking --json
+"${MONEY_CRAFT_REPORT_PYTHON:-$HOME/.config/money-craft/report-venv/bin/python}" \
+  "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" report render \
+  --source <report.md> --output-dir <repo-external-rendition-dir> --json
+"${MONEY_CRAFT_REPORT_PYTHON:-$HOME/.config/money-craft/report-venv/bin/python}" \
+  "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" report verify \
+  --source <report.md> --html <report.html> --pdf <report.pdf> --json
 ```
 
 数据命令按顺序读取 `FUYAO_API_KEY` 和权限受限的 `~/.config/money-craft/fuyao-api-key`。两者都没有时必须明确失败；研究可改用宿主可用的官方 Web/文件来源，并在报告中标记结构化 Provider 未启用。若没有任何当前来源，停止事实型判断。`doctor --json` 同时报告凭据状态和当前 research output root，但不联网、不创建目录。
 
 报告可从 [templates/report.md](templates/report.md) 或 [templates/thesis.md](templates/thesis.md) 开始。完整公司研究和财报精读还必须完成 plan 生成的 reconciliation artifact：明确本期/比较期是原披露、重述还是可比估算，校验资产负债式和现金余额勾稽，Q2-Q4 还要校验累计值推导单季，并处理会计列报到经营实质、期后事项。任一 audit 失败都不得宣称报告已准出。
+
+最终 HTML/PDF 必须按 `report-rendering.md` 从已审计 Markdown 派生：输出目标显式、SHA-256 绑定、离线可读、外部来源可见但不可点击，并完成真实浏览器宽屏/窄屏和 PDF 视觉验收。渲染器不能改写 sealed revision 或研究结论。
 
 更新投资论文时必须先生成 `thesis-update-plan.v1`，逐项评估原有假设和红线；新版完成后运行 `thesis diff`。结构化 diff 会阻断证券身份变化、时间倒退、旧更新记录改写、缺少本期更新记录或任一版本审计失败。只有 diff `valid=true` 才可讨论论文发生了什么变化；`signal` 是复核优先级，不是交易指令。
 

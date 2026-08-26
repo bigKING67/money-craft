@@ -15,6 +15,11 @@ runtime contract for Codex, Pi, Claude, and Grok.
   never invent missing figures
 - No automatic trading, order placement, account access, or full-market dumps
 
+The core research runtime remains standard-library-only. The optional final
+report renderer uses Markdown, WeasyPrint, and pypdf from a dedicated local
+environment and produces implementation-neutral `report.html` / `report.pdf`
+reading artifacts.
+
 The API key must be supplied through the process environment or the protected
 local file below. Do not pass it on the command line, put it in a repository
 file, or include it in a report.
@@ -30,6 +35,48 @@ python3 skills/money-craft/scripts/money_craft.py data search --query 贵州茅�
 
 See `skills/money-craft/references/providers/fuyao.md` for the supported v0.2
 operations and evidence-capture contract.
+
+## Final report rendering
+
+Money Craft renders audited Markdown into a responsive, offline HTML report and
+an A4 PDF using the `editorial-ivory` research-publication design system. The canonical Markdown,
+source manifest, audit, and offline verifier remain the research truth; the
+HTML/PDF are hash-bound reading renditions and cannot change the conclusion or
+evidence.
+
+Create the dedicated optional runtime once:
+
+```bash
+python3 -m venv ~/.config/money-craft/report-venv
+~/.config/money-craft/report-venv/bin/python -m pip install \
+  -r skills/money-craft/requirements-report.txt
+```
+
+Render only to an explicit repo-external preview or rendition directory:
+
+```bash
+~/.config/money-craft/report-venv/bin/python \
+  skills/money-craft/scripts/money_craft.py report render \
+  --source <revision>/report.md \
+  --output-dir /tmp/money-craft-report-preview \
+  --evidence-manifest <revision>/sources/sources.manifest.json \
+  --audit <revision>/report.audit.json \
+  --revision-manifest <revision>/REVISION.json \
+  --archive-manifest <revision>/manifest.json --json
+
+~/.config/money-craft/report-venv/bin/python \
+  skills/money-craft/scripts/money_craft.py report verify \
+  --source <revision>/report.md \
+  --html /tmp/money-craft-report-preview/report.html \
+  --pdf /tmp/money-craft-report-preview/report.pdf --json
+```
+
+The renderer embeds CSS, JavaScript, and deterministic inline SVG charts into a
+single portable HTML file. Source URLs remain visible as non-navigable locators,
+so opening an archived report never fetches remote assets. Direct rendering
+never defaults to the canonical revision directory. See
+`skills/money-craft/references/report-rendering.md` for the visual, archive, and
+verification contract.
 
 ## Research and thesis workflow
 
