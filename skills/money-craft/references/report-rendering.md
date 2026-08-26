@@ -64,4 +64,4 @@ REPORT_PYTHON="${MONEY_CRAFT_REPORT_PYTHON:-$HOME/.config/money-craft/report-ven
 
 ## 正式档案
 
-正式 Money 档案使用非破坏性的 rendition 流程：以已封存 revision 为输入，创建 preview，记录 renderer/template/style/script 的不可变摘要，完成视觉 review 后再原子切换当前 rendition。当前 Money Craft rendition 的用户文件名固定为 `report.html` 和 `report.pdf`，不得暴露底层渲染实现名；历史 rendition 保持不可变但不会成为当前输出。任何渲染都不得覆写 canonical `report.md`。
+正式 Money 档案使用非破坏性的 rendition 流程：以已封存 revision 为输入，创建 preview，记录 renderer/template/style/script 的不可变摘要，完成视觉 review 后再原子切换当前 rendition。当前阅读层的用户文件名固定为公司目录下的 `report.html` 和 `report.pdf`，不得暴露底层渲染实现名；内部 `renders/` 只作可重建档案。任何渲染都不得覆写 canonical `report.md`。
