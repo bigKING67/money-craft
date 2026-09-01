@@ -151,6 +151,107 @@ def record_discovery(
     discovery[host] = {"status": "passed", "method": method}
 
 
+def inspect_compatibility_installation(
+    *,
+    installed: Path,
+    label: str,
+    check_prefix: str,
+    runner: Runner,
+) -> dict[str, Any]:
+    provenance_path = installed / "INSTALL_PROVENANCE.json"
+    if (
+        installed.is_symlink()
+        or not (installed / "SKILL.md").is_file()
+        or not provenance_path.is_file()
+    ):
+        return {
+            "valid": False,
+            "error": f"{label} installation is missing or invalid",
+            "reason": "installation missing or invalid",
+            "checks": [],
+        }
+    try:
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "valid": False,
+            "error": f"{label} installation provenance is invalid",
+            "reason": "invalid provenance",
+            "checks": [],
+        }
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    if (
+        provenance.get("schema") != "money-craft.install-provenance.v1"
+        or provenance.get("version") != version
+    ):
+        return {
+            "valid": False,
+            "error": f"{label} installation provenance identity is invalid",
+            "reason": "provenance identity mismatch",
+            "checks": [],
+        }
+    source_hash = tree_sha256(ROOT / "skills" / "money-craft")
+    installed_hash = tree_sha256(installed, excluded_names={"INSTALL_PROVENANCE.json"})
+    if provenance.get("source_skill_sha256") != source_hash or installed_hash != source_hash:
+        return {
+            "valid": False,
+            "error": f"{label} installation does not match the canonical Skill",
+            "reason": "source hash mismatch",
+            "checks": [],
+        }
+    command = [sys.executable, str(installed / "scripts" / "money_craft.py"), "self-test", "--json"]
+    try:
+        code, output = runner(command, max_output_chars=100_000)
+        payload = json.loads(output) if code == 0 else {}
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        code, payload = 1, {}
+    if code or payload.get("runtime_valid") is not True:
+        return {
+            "valid": False,
+            "error": f"{label} installed runtime self-test failed",
+            "reason": "runtime self-test failed",
+            "checks": [f"{check_prefix}-install-parity"],
+        }
+    return {
+        "valid": True,
+        "error": None,
+        "reason": None,
+        "checks": [
+            f"{check_prefix}-install-parity",
+            f"{check_prefix}-installed-runtime-self-test",
+        ],
+    }
+
+
+def validate_shared_agents_compatibility(
+    *,
+    home: Path,
+    checks: list[str],
+    errors: list[str],
+    discovery: dict[str, dict[str, Any]],
+    runner: Runner,
+) -> None:
+    result = inspect_compatibility_installation(
+        installed=home / ".agents" / "skills" / "money-craft",
+        label="Shared Agent Skills",
+        check_prefix="shared-agents",
+        runner=runner,
+    )
+    checks.extend(result["checks"])
+    if result["valid"] is not True:
+        errors.append(result["error"])
+        discovery["shared_agents"] = {
+            "status": "failed",
+            "method": "shared install parity and runtime self-test",
+            "reason": result["reason"],
+        }
+        return
+    discovery["shared_agents"] = {
+        "status": "passed",
+        "method": "shared install parity and runtime self-test",
+    }
+
+
 def validate_claude_compatibility(
     *,
     home: Path,
@@ -161,68 +262,22 @@ def validate_claude_compatibility(
     runner: Runner,
 ) -> None:
     installed = home / ".claude" / "skills" / "money-craft"
-    provenance_path = installed / "INSTALL_PROVENANCE.json"
-    if installed.is_symlink() or not (installed / "SKILL.md").is_file() or not provenance_path.is_file():
-        errors.append("Claude compatibility installation is missing or invalid")
+    result = inspect_compatibility_installation(
+        installed=installed,
+        label="Claude compatibility",
+        check_prefix="claude-compat",
+        runner=runner,
+    )
+    checks.extend(result["checks"])
+    if result["valid"] is not True:
+        errors.append(result["error"])
         discovery["claude"] = {
             "status": "failed",
             "method": "compatibility install and runtime self-test",
-            "reason": "installation missing or invalid",
+            "reason": result["reason"],
             "fresh_session_tested": False,
         }
         return
-    try:
-        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        errors.append("Claude compatibility installation provenance is invalid")
-        discovery["claude"] = {
-            "status": "failed",
-            "method": "compatibility install and runtime self-test",
-            "reason": "invalid provenance",
-            "fresh_session_tested": False,
-        }
-        return
-    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-    if (
-        provenance.get("schema") != "money-craft.install-provenance.v1"
-        or provenance.get("version") != version
-    ):
-        errors.append("Claude compatibility installation provenance identity is invalid")
-        discovery["claude"] = {
-            "status": "failed",
-            "method": "compatibility install and runtime self-test",
-            "reason": "provenance identity mismatch",
-            "fresh_session_tested": False,
-        }
-        return
-    source_hash = tree_sha256(ROOT / "skills" / "money-craft")
-    installed_hash = tree_sha256(installed, excluded_names={"INSTALL_PROVENANCE.json"})
-    if provenance.get("source_skill_sha256") != source_hash or installed_hash != source_hash:
-        errors.append("Claude compatibility installation does not match the canonical Skill")
-        discovery["claude"] = {
-            "status": "failed",
-            "method": "compatibility install and runtime self-test",
-            "reason": "source hash mismatch",
-            "fresh_session_tested": False,
-        }
-        return
-    checks.append("claude-compat-install-parity")
-    command = [sys.executable, str(installed / "scripts" / "money_craft.py"), "self-test", "--json"]
-    try:
-        code, output = runner(command, max_output_chars=100_000)
-        payload = json.loads(output) if code == 0 else {}
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        code, payload = 1, {}
-    if code or payload.get("runtime_valid") is not True:
-        errors.append("Claude installed runtime self-test failed")
-        discovery["claude"] = {
-            "status": "failed",
-            "method": "compatibility install and runtime self-test",
-            "reason": "runtime self-test failed",
-            "fresh_session_tested": False,
-        }
-        return
-    checks.append("claude-installed-runtime-self-test")
     warnings.append("Claude compatibility is validated without a paid fresh model invocation")
     discovery["claude"] = {
         "status": "partial",
@@ -241,6 +296,13 @@ def run_host_discovery(
     runner: Runner,
 ) -> dict[str, dict[str, Any]]:
     discovery: dict[str, dict[str, Any]] = {}
+    validate_shared_agents_compatibility(
+        home=home,
+        checks=checks,
+        errors=errors,
+        discovery=discovery,
+        runner=runner,
+    )
     record_discovery(
         host="codex",
         command=["codex", "debug", "prompt-input", "Use $money-craft for A-share research."],

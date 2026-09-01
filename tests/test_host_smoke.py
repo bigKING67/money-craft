@@ -15,6 +15,19 @@ import host_smoke  # noqa: E402
 import install_skill  # noqa: E402
 
 
+def install_fixture(destination: Path) -> None:
+    shutil.copytree(ROOT / "skills" / "money-craft", destination)
+    provenance = {
+        "schema": "money-craft.install-provenance.v1",
+        "version": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
+        "source_skill_sha256": install_skill.tree_sha256(ROOT / "skills" / "money-craft"),
+    }
+    (destination / "INSTALL_PROVENANCE.json").write_text(
+        json.dumps(provenance),
+        encoding="utf-8",
+    )
+
+
 class HostDiscoveryParserTests(unittest.TestCase):
     def test_codex_model_visible_catalog(self) -> None:
         output = json.dumps(
@@ -175,17 +188,8 @@ class HostDiscoveryGateTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            installed = home / ".claude" / "skills" / "money-craft"
-            shutil.copytree(ROOT / "skills" / "money-craft", installed)
-            provenance = {
-                "schema": "money-craft.install-provenance.v1",
-                "version": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
-                "source_skill_sha256": install_skill.tree_sha256(ROOT / "skills" / "money-craft"),
-            }
-            (installed / "INSTALL_PROVENANCE.json").write_text(
-                json.dumps(provenance),
-                encoding="utf-8",
-            )
+            install_fixture(home / ".agents" / "skills" / "money-craft")
+            install_fixture(home / ".claude" / "skills" / "money-craft")
             with mock.patch.object(host_smoke.shutil, "which", return_value="/fixture/bin/host"):
                 result = host_smoke.validate(
                     False,
@@ -196,11 +200,45 @@ class HostDiscoveryGateTests(unittest.TestCase):
 
         self.assertTrue(result["valid"])
         self.assertTrue(result["discovery_tested"])
+        self.assertEqual(result["discovery"]["shared_agents"]["status"], "passed")
         self.assertEqual(result["discovery"]["codex"]["status"], "passed")
         self.assertEqual(result["discovery"]["pi"]["status"], "passed")
         self.assertEqual(result["discovery"]["grok"]["status"], "passed")
         self.assertEqual(result["discovery"]["claude"]["status"], "partial")
         self.assertFalse(result["fresh_session_tested"])
+
+    def test_shared_agents_compatibility_fails_closed_on_installed_drift(self) -> None:
+        def fake_runner(
+            command: list[str],
+            *,
+            input_text: str | None = None,
+            max_output_chars: int = 1000,
+        ) -> tuple[int, str]:
+            del command, input_text, max_output_chars
+            return 0, json.dumps({"runtime_valid": True})
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            installed = home / ".agents" / "skills" / "money-craft"
+            install_fixture(installed)
+            with (installed / "SKILL.md").open("a", encoding="utf-8") as handle:
+                handle.write("\ninstalled drift\n")
+            checks: list[str] = []
+            errors: list[str] = []
+            discovery: dict[str, dict[str, object]] = {}
+            host_smoke.validate_shared_agents_compatibility(
+                home=home,
+                checks=checks,
+                errors=errors,
+                discovery=discovery,
+                runner=fake_runner,
+            )
+
+        self.assertEqual(
+            errors,
+            ["Shared Agent Skills installation does not match the canonical Skill"],
+        )
+        self.assertEqual(discovery["shared_agents"]["status"], "failed")
 
     def test_claude_compatibility_fails_closed_on_installed_drift(self) -> None:
         def fake_runner(
@@ -215,16 +253,7 @@ class HostDiscoveryGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             installed = home / ".claude" / "skills" / "money-craft"
-            shutil.copytree(ROOT / "skills" / "money-craft", installed)
-            provenance = {
-                "schema": "money-craft.install-provenance.v1",
-                "version": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
-                "source_skill_sha256": install_skill.tree_sha256(ROOT / "skills" / "money-craft"),
-            }
-            (installed / "INSTALL_PROVENANCE.json").write_text(
-                json.dumps(provenance),
-                encoding="utf-8",
-            )
+            install_fixture(installed)
             with (installed / "SKILL.md").open("a", encoding="utf-8") as handle:
                 handle.write("\ninstalled drift\n")
             checks: list[str] = []

@@ -311,15 +311,26 @@ npm test
 npm run validate
 npm run package-check
 npm run host-smoke
+# Optional report runtime only:
+"${MONEY_CRAFT_REPORT_PYTHON:-$HOME/.config/money-craft/report-venv/bin/python}" \
+  scripts/report_smoke.py
 ```
 
-The default host smoke is model-free: Codex is checked through its model-visible
-prompt catalog, Pi through a fresh offline RPC `get_commands`, and Grok through
-`inspect --json`. Claude Code is checked through its compatibility installation
-hash and installed runtime self-test because 2.1.x exposes no model-free personal
-Skill discovery command. Therefore `fresh_session_tested` remains false and the
-Claude result is explicitly partial; no host model is invoked and no model usage
-is incurred. `npm run host-smoke:static` keeps the manifest-only check.
+The default host smoke is model-free. It first verifies the shared Agent Skills
+installation against the canonical tree hash and runs the installed runtime
+self-test. Codex is then checked through its model-visible prompt catalog, Pi
+through a fresh offline RPC `get_commands`, and Grok through `inspect --json`.
+Claude Code is checked through its separate compatibility installation hash and
+installed runtime self-test because 2.1.x exposes no model-free personal Skill
+discovery command. Therefore `fresh_session_tested` remains false and the Claude
+result is explicitly partial; no host model is invoked and no model usage is
+incurred. `npm run host-smoke:static` keeps the manifest-only check.
+
+`scripts/report_smoke.py` requires the optional dependencies from
+`skills/money-craft/requirements-report.txt`. It renders the tracked 600519
+acceptance report to a temporary directory and verifies the portable HTML and
+PDF before deleting the temporary rendition. CI runs this as a dedicated report
+job so the core standard-library matrix remains independent of report packages.
 
 These gates validate source, package, and local discovery behavior. Fuyao live
 access and paid fresh-session host behavior remain separate evidence layers and

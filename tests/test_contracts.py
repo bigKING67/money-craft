@@ -95,6 +95,16 @@ class RepositoryContractTests(unittest.TestCase):
                 seen.add(action)
         self.assertEqual(seen, set(self.ACTION_RELEASES))
 
+    def test_report_runtime_has_a_real_ci_smoke_gate(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("  report-render:\n", workflow)
+        self.assertIn(
+            "python3 -m pip install -r skills/money-craft/requirements-report.txt",
+            workflow,
+        )
+        self.assertIn("python3 -m unittest tests.test_report_renderer -v", workflow)
+        self.assertIn("python3 scripts/report_smoke.py", workflow)
+
     def test_atomic_installer_and_force_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "skills"
