@@ -192,7 +192,7 @@ class InputAndCaptureTests(unittest.TestCase):
     def test_secure_file_credential_and_environment_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            path = mc.fuyao_api_key_path(home)
+            path = mc.fuyao_api_key_path(home, {})
             path.parent.mkdir(parents=True)
             path.write_text("file-secret\n", encoding="utf-8")
             path.chmod(0o600)
@@ -206,7 +206,7 @@ class InputAndCaptureTests(unittest.TestCase):
     def test_secure_file_rejects_permissive_mode_and_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            path = mc.fuyao_api_key_path(home)
+            path = mc.fuyao_api_key_path(home, {})
             path.parent.mkdir(parents=True)
             path.write_text("file-secret\n", encoding="utf-8")
             path.chmod(0o644)

@@ -54,7 +54,7 @@ class FredCredentialTests(unittest.TestCase):
     def test_secure_file_and_environment_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            path = fred.api_key_path(home)
+            path = fred.api_key_path(home, {})
             path.parent.mkdir(parents=True)
             path.write_text(TEST_KEY + "\n", encoding="utf-8")
             path.chmod(0o600)
@@ -68,7 +68,7 @@ class FredCredentialTests(unittest.TestCase):
     def test_secure_file_rejects_permissive_mode_symlink_and_bad_format(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            path = fred.api_key_path(home)
+            path = fred.api_key_path(home, {})
             path.parent.mkdir(parents=True)
             path.write_text(TEST_KEY + "\n", encoding="utf-8")
             path.chmod(0o644)
