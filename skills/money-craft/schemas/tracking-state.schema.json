@@ -3,14 +3,14 @@
   "$id": "https://github.com/bigKING67/money-craft/schemas/tracking-state.schema.json",
   "title": "Money Craft Tracking State",
   "type": "object",
-  "required": ["schema", "security", "thscode", "as_of", "data_cutoff", "base_currency", "tracking_revision", "health", "hypotheses", "red_lines", "automatic_trading"],
+  "required": ["schema", "security", "security_id", "as_of", "data_cutoff", "base_currency", "tracking_revision", "health", "hypotheses", "red_lines", "automatic_trading"],
   "properties": {
     "schema": {"const": "money-craft.tracking-state.v1"},
     "security": {"type": "string", "minLength": 1},
-    "thscode": {"type": "string", "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"},
+    "security_id": {"type": "string", "pattern": "^[A-Z0-9][A-Z0-9-]{1,15}:[A-Z0-9][A-Z0-9._-]{0,31}$"},
     "as_of": {"type": "string", "format": "date"},
     "data_cutoff": {"type": "string", "format": "date-time"},
-    "base_currency": {"const": "CNY"},
+    "base_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
     "tracking_revision": {"type": "string", "pattern": "^(DRAFT|t[0-9]{4})$"},
     "source_research": {"type": "object"},
     "health": {

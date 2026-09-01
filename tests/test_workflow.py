@@ -70,16 +70,98 @@ NEXT_UPDATE = "| 2026-11-01 | H01 转为 WEAKENED | 下调 | 需要复核 | [S02
 
 
 class CompanyResearchPlanTests(unittest.TestCase):
+    def test_global_security_declares_unconfigured_yfinance_without_operations(self) -> None:
+        plan = workflow.company_research_plan(
+            security="NVIDIA Corporation",
+            security_id="us-nasdaq:nvda",
+            base_currency="usd",
+            as_of="2026-08-23",
+            latest_report="2026-2",
+            latest_report_end="2025-07-27",
+            latest_annual_report="2025-4",
+            provider={"mode": "auto", "configured": False, "network_checked": False},
+            today=dt.date(2026, 8, 23),
+        )
+        self.assertEqual(plan["identity"]["security_id"], "US-NASDAQ:NVDA")
+        self.assertEqual(plan["identity"]["base_currency"], "USD")
+        self.assertNotIn("thscode", plan["identity"])
+        self.assertEqual(plan["identity"]["provider_identifiers"], {"yfinance": "NVDA"})
+        self.assertEqual(plan["provider"]["adapter"], "yfinance")
+        self.assertEqual(plan["provider"]["availability"], "not-configured")
+        self.assertEqual(plan["provider_operations"], [])
+        self.assertEqual(
+            [item["id"] for item in plan["official_evidence_requirements"] if item["required"]],
+            ["S11", "S12", "S13"],
+        )
+
+    def test_cn_security_id_derives_legacy_fuyao_identifier(self) -> None:
+        identity = workflow.normalize_security_identity(
+            security="美的集团",
+            security_id="CN-SZ:000333",
+            thscode=None,
+            base_currency=None,
+        )
+        self.assertEqual(identity["thscode"], "000333.SZ")
+        self.assertEqual(identity["provider_identifiers"], {"fuyao": "000333.SZ"})
+
+    def test_hk_security_id_derives_yfinance_symbol_without_changing_canonical_identity(self) -> None:
+        identity = workflow.normalize_security_identity(
+            security="Tencent Holdings",
+            security_id="HK:00700",
+            thscode=None,
+            base_currency="HKD",
+        )
+        self.assertEqual(identity["security_id"], "HK:00700")
+        self.assertEqual(identity["provider_identifiers"], {"yfinance": "0700.HK"})
+        self.assertEqual(identity["exchange"], "HKEX")
+
+    def test_configured_yfinance_builds_bounded_global_operation_matrix(self) -> None:
+        plan = workflow.company_research_plan(
+            security="NVIDIA Corporation",
+            security_id="US-NASDAQ:NVDA",
+            base_currency="USD",
+            as_of="2026-08-23",
+            latest_report="2026-2",
+            latest_report_end="2025-07-27",
+            latest_annual_report="2025-4",
+            provider={
+                "mode": "auto",
+                "adapter": "yfinance",
+                "configured": True,
+                "network_checked": False,
+            },
+            today=dt.date(2026, 8, 23),
+        )
+        self.assertEqual(plan["provider"]["availability"], "available")
+        self.assertEqual(
+            [item["id"] for item in plan["provider_operations"]],
+            ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S09", "S14", "S15", "S16"],
+        )
+        self.assertTrue(all(item["provider"] == "yfinance" for item in plan["provider_operations"]))
+        self.assertEqual(plan["provider_operations"][3]["arguments"]["symbol"], "NVDA")
+
+    def test_non_a_share_requires_currency_and_fiscal_period_end(self) -> None:
+        with self.assertRaisesRegex(workflow.WorkflowError, "base_currency"):
+            workflow.company_research_plan(
+                security="Tencent Holdings",
+                security_id="HK:00700",
+                as_of="2026-08-23",
+                latest_report="2026-2",
+                provider={"mode": "auto", "configured": False, "network_checked": False},
+                today=dt.date(2026, 8, 23),
+            )
+
     def test_plan_is_identity_bound_and_has_complete_operation_matrix(self) -> None:
         plan = workflow.company_research_plan(
             security="美的集团",
             thscode="000333.sz",
             as_of="2026-08-23",
             latest_report="2026-1",
-            provider={"mode": "disabled", "configured": False, "network_checked": False},
+            provider={"mode": "auto", "configured": True, "network_checked": False},
             today=dt.date(2026, 8, 23),
         )
         self.assertEqual(plan["identity"]["thscode"], "000333.SZ")
+        self.assertEqual(plan["identity"]["security_id"], "CN-SZ:000333")
         self.assertEqual(plan["identity"]["exchange"], "SZSE")
         self.assertEqual(plan["latest_annual_period"], "2025-4")
         self.assertEqual(

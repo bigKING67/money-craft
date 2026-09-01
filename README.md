@@ -1,18 +1,20 @@
 # Money Craft
 
-Money Craft is a portable Agent Skill for evidence-first A-share fundamental
-screening, company research, earnings review, scenario valuation, and thesis
-tracking. It is a controlled derivative of AI Berkshire and adds a consistent
-runtime contract for Codex, Pi, Claude, and Grok.
+Money Craft is a portable Agent Skill for evidence-first global investment
+research and wealth decision support: listed-company and industry research,
+fund and portfolio analysis, earnings review, scenario valuation, and thesis
+tracking. A-share support is one provider adapter, not the product boundary.
+It is a controlled derivative of AI Berkshire and adds a consistent runtime
+contract for Codex, Pi, Claude, and Grok.
 
 ## Runtime boundaries
 
 - Canonical skill: `skills/money-craft/`
 - Runtime: Python 3.10+, standard library only
-- Structured data: optional Fuyao REST provider via `FUYAO_API_KEY` or a protected local key file
+- Structured data: optional Fuyao A-share REST, persistent isolated `yfinance` Hong Kong/U.S. secondary-market, and FRED/ALFRED macro/vintage adapters
 - Research output: `~/Documents/sixseven/money` by default, overridable with `MONEY_CRAFT_OUTPUT_ROOT`
-- Without the provider: use official exchange filings and issuer IR sources;
-  never invent missing figures
+- Without a market adapter: use the target regulator, exchange, issuer/fund
+  filings, and other official sources; never invent missing figures
 - No automatic trading, order placement, account access, or full-market dumps
 
 The core research runtime remains standard-library-only. The optional final
@@ -20,7 +22,23 @@ report renderer uses Markdown, WeasyPrint, and pypdf from a dedicated local
 environment and produces implementation-neutral `report.html` / `report.pdf`
 reading artifacts.
 
-The API key must be supplied through the process environment or the protected
+Money Craft separates configuration, persistent runtime data, and cache using
+the XDG base-directory contract:
+
+| Category | Default | App-specific override |
+|---|---|---|
+| Credentials and user configuration | `~/.config/money-craft` | `MONEY_CRAFT_CONFIG_HOME` |
+| Optional venvs and persistent runtime data | `~/.local/share/money-craft` | `MONEY_CRAFT_DATA_HOME` |
+| Rebuildable cache | `~/.cache/money-craft` | `MONEY_CRAFT_CACHE_HOME` |
+
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` are honored when the
+app-specific variables are absent. All overrides must be absolute paths. For
+source-repository development only, copy `.env.example` to the ignored
+`.env.local`, set mode `0600`, and explicitly select it with an absolute
+`MONEY_CRAFT_ENV_FILE`; installed Skills never search the current directory or
+parent folders for dotenv files. Existing process variables take precedence.
+
+The Fuyao API key must be supplied through the process environment or the protected
 local file below. Do not pass it on the command line, put it in a repository
 file, or include it in a report.
 
@@ -33,8 +51,60 @@ python3 skills/money-craft/scripts/money_craft.py doctor --json
 python3 skills/money-craft/scripts/money_craft.py data search --query 贵州茅台
 ```
 
-See `skills/money-craft/references/providers/fuyao.md` for the supported v0.2
+See `skills/money-craft/references/providers/fuyao.md` for the bounded Fuyao
 operations and evidence-capture contract.
+
+For Hong Kong and U.S. research, install the pinned optional adapter in a
+dedicated environment instead of changing the system Python:
+
+```bash
+MONEY_CRAFT_DATA_HOME="${MONEY_CRAFT_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/money-craft}"
+python3 -m venv "$MONEY_CRAFT_DATA_HOME/venvs/data"
+"$MONEY_CRAFT_DATA_HOME/venvs/data/bin/python" -m pip install \
+  -r skills/money-craft/requirements-yfinance.txt
+"$MONEY_CRAFT_DATA_HOME/venvs/data/bin/python" \
+  skills/money-craft/scripts/money_craft.py doctor --json
+```
+
+After this environment exists, launching `money_craft.py` with the system
+`python3` transparently re-executes the same command with the persistent data
+runtime. An already active report or other explicit venv is not replaced.
+`MONEY_CRAFT_DATA_PYTHON` may select another controlled interpreter.
+
+`yfinance` and Yahoo Finance data are secondary, personal-use research inputs;
+official regulator, exchange, and issuer filings remain primary. See
+`skills/money-craft/references/providers/yfinance.md` for symbol mapping,
+supported operations, capture semantics, and data-use boundaries.
+
+FRED and ALFRED supply macroeconomic series and historical data vintages. FRED
+answers what the latest revised history shows; an ALFRED `as-known-on` query
+answers what was available to a decision maker on a past date. This distinction
+prevents revised GDP, inflation, and employment data from leaking future
+information into historical research or backtests.
+
+Every FRED request needs its own API key. If a key has appeared in chat, a
+screenshot, a log, or shell history, revoke it in FRED Account and create a new
+one before saving it. Enter the replacement without echoing it:
+
+```bash
+install -d -m 700 ~/.config/money-craft
+read -rs 'FRED_API_KEY?FRED API key: '; printf '%s\n' "$FRED_API_KEY" > ~/.config/money-craft/fred-api-key; unset FRED_API_KEY
+chmod 600 ~/.config/money-craft/fred-api-key
+python3 skills/money-craft/scripts/money_craft.py doctor --json
+python3 skills/money-craft/scripts/money_craft.py data search \
+  --provider fred --query "10-year breakeven inflation" --limit 10
+python3 skills/money-craft/scripts/money_craft.py data observations \
+  --series-id T10YIE --start 2020-01-01 --end 2026-09-01
+python3 skills/money-craft/scripts/money_craft.py data observations \
+  --series-id GDPC1 --start 2019-01-01 --end 2024-12-31 \
+  --as-known-on 2024-12-31
+```
+
+This product uses the FRED® API but is not endorsed or certified by the Federal
+Reserve Bank of St. Louis. FRED can include third-party series with separate
+rights; access through the API does not grant redistribution permission. See
+`skills/money-craft/references/providers/fred.md` for the bounded operations,
+macro-series map, vintage semantics, key handling, and evidence contract.
 
 ## Final report rendering
 
@@ -47,15 +117,16 @@ evidence.
 Create the dedicated optional runtime once:
 
 ```bash
-python3 -m venv ~/.config/money-craft/report-venv
-~/.config/money-craft/report-venv/bin/python -m pip install \
+MONEY_CRAFT_DATA_HOME="${MONEY_CRAFT_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/money-craft}"
+python3 -m venv "$MONEY_CRAFT_DATA_HOME/venvs/report"
+"$MONEY_CRAFT_DATA_HOME/venvs/report/bin/python" -m pip install \
   -r skills/money-craft/requirements-report.txt
 ```
 
 Render only to an explicit repo-external preview or rendition directory:
 
 ```bash
-~/.config/money-craft/report-venv/bin/python \
+"${MONEY_CRAFT_REPORT_PYTHON:-${MONEY_CRAFT_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/money-craft}/venvs/report/bin/python}" \
   skills/money-craft/scripts/money_craft.py report render \
   --source <revision>/report.md \
   --output-dir /tmp/money-craft-report-preview \
@@ -64,7 +135,7 @@ Render only to an explicit repo-external preview or rendition directory:
   --revision-manifest <revision>/REVISION.json \
   --archive-manifest <revision>/manifest.json --json
 
-~/.config/money-craft/report-venv/bin/python \
+"${MONEY_CRAFT_REPORT_PYTHON:-${MONEY_CRAFT_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/money-craft}/venvs/report/bin/python}" \
   skills/money-craft/scripts/money_craft.py report verify \
   --source <revision>/report.md \
   --html /tmp/money-craft-report-preview/report.html \
@@ -80,18 +151,26 @@ verification contract.
 
 ## Research and thesis workflow
 
-After resolving the exact A-share identity and latest formal reporting period,
-generate a model-free company research contract:
+After resolving the exact global security identity and latest formal reporting
+period, generate a model-free company research contract. Non-A-share research
+uses Money Craft's open `MARKET:SYMBOL` identity, explicit base currency, fiscal
+period end, and latest annual period:
 
 ```bash
 python3 skills/money-craft/scripts/money_craft.py research plan \
-  --security 美的集团 --thscode 000333.SZ \
-  --as-of 2026-08-23 --latest-report 2026-1 \
-  --provider-mode auto --json
+  --security <issuer-name> --security-id <MARKET:SYMBOL> \
+  --base-currency <three-letter-currency> \
+  --as-of <YYYY-MM-DD> --latest-report <YYYY-1..4> \
+  --latest-report-end <YYYY-MM-DD> --latest-annual-report <YYYY-4> \
+  --provider auto --provider-mode auto --json
 ```
 
+A-share callers remain backward compatible: `--thscode 000333.SZ` derives
+`CN-SZ:000333` and defaults the base currency to CNY. Calendar-quarter A-share
+plans may omit `--latest-report-end`.
+
 The plan binds the identity, dates, mandatory and conditional official-evidence
-requirements, bounded Fuyao operation matrix, financial-reconciliation
+requirements, a bounded market-appropriate Provider operation matrix, financial-reconciliation
 contract, expected artifacts, and audit gates. It does not access the network,
 create a report, or claim that any stage has completed.
 
@@ -99,10 +178,13 @@ Create a resumable local research run from that same plan contract:
 
 ```bash
 python3 skills/money-craft/scripts/money_craft.py research init \
-  --security 美的集团 --thscode 000333.SZ \
-  --as-of 2026-08-23 --latest-report 2026-1 \
-  --provider-mode auto --json
+  --security <issuer-name> --security-id <MARKET:SYMBOL> \
+  --base-currency <three-letter-currency> \
+  --as-of <YYYY-MM-DD> --latest-report <YYYY-1..4> \
+  --latest-report-end <YYYY-MM-DD> --latest-annual-report <YYYY-4> \
+  --provider auto --provider-mode auto --json
 
+# Run only when plan.json contains executable provider_operations.
 python3 skills/money-craft/scripts/money_craft.py research collect \
   --workspace <workspace-returned-by-init> --resume --json
 ```
@@ -112,7 +194,7 @@ archive without pretending that the run is a sealed report:
 
 ```text
 ~/Documents/sixseven/money/
-└── <ticker>-<company>/
+└── <identity>-<company>/
     └── <YYYY-MM-DD>/
         ├── .research/<run-id>/       # mutable Money Craft research run
         │   ├── plan.json
@@ -135,10 +217,13 @@ commands should use.
 `init` is model-free and offline. It writes an immutable `plan.json`, derives
 `case.json` from that plan instead of maintaining a second operation matrix,
 creates draft report/thesis files, and starts an append-only `run-state.json`.
-`collect` is the explicit network boundary: it executes only the bounded Fuyao
-operations in the derived case, writes private non-overwriting captures, and
-returns non-zero when a provider gap remains. A missing credential or a
-workspace initialized with `provider-mode=disabled` fails before collection.
+`collect` is the explicit selected-Provider network boundary: it executes only
+the bounded operations in the derived case, writes private non-overwriting
+captures, and returns non-zero when a provider gap remains. Auto routing selects
+Fuyao for A shares and the optional yfinance adapter for Hong Kong and U.S.
+equities. For an unsupported market, an unconfigured adapter, or
+`provider-mode=disabled`, the plan contains no executable operations; skip
+`collect`, import official evidence, and preserve the declared provider gap.
 
 Official filings remain an explicit local import rather than a provider
 substitute or an automatic download:
@@ -206,7 +291,7 @@ Persist an audited thesis update next to the company's dated research folders:
 
 ```text
 ~/Documents/sixseven/money/
-└── <ticker>-<company>/
+└── <identity>-<company>/
     ├── <YYYY-MM-DD>/revisions/rNNNN/  # immutable formal research archive
     └── tracking/
         ├── current.json               # atomic pointer to the latest tracking revision
@@ -247,7 +332,7 @@ and escalation rules.
 
 The repository distributes code, schemas, synthetic test fixtures, derived
 research reports, audits, and hash-bound evidence manifests. It does not
-distribute Fuyao response payloads, capture receipts, downloaded filings, or
+distribute Fuyao response payloads, yfinance adapter exports, capture receipts, downloaded filings, or
 web-page snapshots. Keep that material under the ignored
 `local/evidence/<case-id>/` tree.
 
@@ -312,7 +397,7 @@ npm run validate
 npm run package-check
 npm run host-smoke
 # Optional report runtime only:
-"${MONEY_CRAFT_REPORT_PYTHON:-$HOME/.config/money-craft/report-venv/bin/python}" \
+"${MONEY_CRAFT_REPORT_PYTHON:-${MONEY_CRAFT_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/money-craft}/venvs/report/bin/python}" \
   scripts/report_smoke.py
 ```
 
@@ -332,7 +417,7 @@ acceptance report to a temporary directory and verifies the portable HTML and
 PDF before deleting the temporary rendition. CI runs this as a dedicated report
 job so the core standard-library matrix remains independent of report packages.
 
-These gates validate source, package, and local discovery behavior. Fuyao live
+These gates validate source, package, and local discovery behavior. Fuyao, yfinance, and FRED live
 access and paid fresh-session host behavior remain separate evidence layers and
 must not be claimed from static or model-free validation alone.
 
@@ -346,7 +431,9 @@ python3 scripts/upstream_status.py --fetch --json
 
 The command is read-only with respect to Money Craft source. Review each change
 and update `sources.lock.json` only when it is intentionally absorbed, deferred,
-or classified as irrelevant. A report-only review is recorded under `reviews`
-with a fixed `through_commit`; it advances the review baseline without moving
-the submodule pin or pretending report content was absorbed. Never auto-merge
-upstream changes into the canonical skill.
+or classified as irrelevant. Every review range uses a fixed `through_commit`.
+Report-only ranges account for excluded content; selective ranges separately
+record reviewed source, accounted exclusions, reimplemented mechanisms, and
+non-absorbed decisions. Advancing the review baseline never moves the submodule
+pin or pretends generated packages, reports, or account records were absorbed.
+Never auto-merge upstream changes into the canonical skill.

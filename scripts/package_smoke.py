@@ -111,6 +111,7 @@ def smoke(package: Path) -> dict[str, Any]:
             if metadata.get("name") != "@bigking67/money-craft" or metadata.get("version") != version:
                 raise ValueError("package identity mismatch")
             for relative in (
+                ".env.example",
                 ".codex-plugin/plugin.json",
                 ".claude-plugin/plugin.json",
                 ".grok-plugin/plugin.json",
@@ -162,12 +163,18 @@ def smoke(package: Path) -> dict[str, Any]:
                     "init",
                     "--security",
                     "Example Company",
-                    "--thscode",
-                    "000333.SZ",
+                    "--security-id",
+                    "US-NASDAQ:EXAMPLE",
+                    "--base-currency",
+                    "USD",
                     "--as-of",
                     "2026-08-23",
                     "--latest-report",
-                    "2026-1",
+                    "2026-2",
+                    "--latest-report-end",
+                    "2026-06-30",
+                    "--latest-annual-report",
+                    "2025-4",
                     "--provider-mode",
                     "disabled",
                     "--workspace",
@@ -195,7 +202,8 @@ def smoke(package: Path) -> dict[str, Any]:
                 or not isinstance(payload, dict)
                 or payload.get("schema") != "money-craft.research-status.v1"
                 or payload.get("network_used_by_status") is not False
-                or len(payload.get("missing_sources", [])) != 17
+                or len(payload.get("missing_sources", [])) != 3
+                or payload.get("identity", {}).get("security_id") != "US-NASDAQ:EXAMPLE"
             ):
                 raise ValueError(f"installed research status failed: {output}")
             checks.append("installed-research-run-smoke")

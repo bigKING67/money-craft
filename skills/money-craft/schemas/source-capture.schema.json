@@ -17,7 +17,7 @@
   "properties": {
     "schema": {"const": "money-craft.source-capture.v1"},
     "source_id": {"type": "string", "pattern": "^S[0-9]{2,4}$"},
-    "provider": {"const": "fuyao"},
+    "provider": {"enum": ["fuyao", "yfinance"]},
     "operation": {"type": "string"},
     "fetched_at": {"type": "string", "format": "date-time"},
     "request_id": {"type": ["string", "null"]},
@@ -30,4 +30,3 @@
   },
   "additionalProperties": false
 }
-

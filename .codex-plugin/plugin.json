@@ -1,7 +1,7 @@
 {
   "name": "money-craft",
-  "version": "0.2.1",
-  "description": "Evidence-first A-share fundamental research and thesis discipline.",
+  "version": "0.3.0",
+  "description": "Evidence-first global investment research and wealth decision discipline.",
   "author": {
     "name": "bigKING67",
     "url": "https://github.com/bigKING67"
@@ -13,7 +13,8 @@
     "python": ">=3.10"
   },
   "keywords": [
-    "a-share",
+    "global-investing",
+    "portfolio-analysis",
     "fundamental-analysis",
     "investment-research",
     "earnings-review",
@@ -22,8 +23,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Money Craft",
-    "shortDescription": "Evidence-first A-share fundamental research",
-    "longDescription": "Money Craft performs A-share quality screening, company research, earnings review, scenario valuation, and thesis tracking with source binding, exact calculations, and an optional Fuyao structured-data provider.",
+    "shortDescription": "Evidence-first global investment research",
+    "longDescription": "Money Craft supports global company, industry, fund, portfolio, earnings, valuation, and thesis research with source binding, exact calculations, explicit provider gaps, an optional Fuyao A-share adapter, and an isolated optional yfinance adapter for Hong Kong and U.S. secondary market data.",
     "developerName": "bigKING67",
     "category": "Finance",
     "capabilities": [
@@ -34,8 +35,9 @@
     ],
     "websiteURL": "https://github.com/bigKING67/money-craft",
     "defaultPrompt": [
-      "Screen this A-share company for fundamental quality and red flags.",
-      "Research this A-share company and bind every key fact to evidence.",
+      "Screen this global listed company for fundamental quality and red flags.",
+      "Research this global company or industry and bind every key fact to evidence.",
+      "Compare this fund or portfolio using official product documents and explicit risk constraints.",
       "Review the latest earnings report and explain what changed.",
       "Create or update a scenario valuation and investment thesis."
     ],

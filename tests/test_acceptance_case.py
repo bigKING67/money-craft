@@ -79,7 +79,7 @@ class AcceptanceCaseTests(unittest.TestCase):
             thscode="000333.SZ",
             as_of="2026-08-23",
             latest_report="2026-1",
-            provider={"mode": "disabled", "configured": False, "network_checked": False},
+            provider={"mode": "auto", "configured": True, "network_checked": False},
             today=dt.date(2026, 8, 23),
         )
         derived = research_run.derived_case(plan, "0" * 64)

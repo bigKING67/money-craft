@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Portable Money Craft runtime and Fuyao A-share REST client."""
+"""Portable global Money Craft runtime with market and macro data adapters."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import re
 import shutil
 import socket
 import stat
+import subprocess
 import sys
 import time
 import urllib.error
@@ -25,18 +26,26 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
+import fred_adapter
 import research_run
 import report_renderer
+import runtime_paths
 import tracking_workflow
-from research_workflow import WorkflowError, company_research_plan, prepare_thesis_update, thesis_diff
+import yfinance_adapter
+from research_workflow import (
+    WorkflowError,
+    company_research_plan,
+    prepare_thesis_update,
+    thesis_diff,
+    thscode_from_security_id,
+    yfinance_symbol_from_security_id,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
 VERSION = (SKILL_ROOT / "VERSION").read_text(encoding="utf-8").strip()
 BASE_URL = "https://fuyao.aicubes.cn"
 API_KEY_ENV = "FUYAO_API_KEY"
-API_KEY_FILE_RELATIVE = Path(".config") / "money-craft" / "fuyao-api-key"
-API_KEY_FILE_DISPLAY = "~/.config/money-craft/fuyao-api-key"
 MAX_API_KEY_BYTES = 4096
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
@@ -44,8 +53,12 @@ REQUEST_TIMEOUT_SECONDS = 30
 MAX_ATTEMPTS = 3
 RETRY_DELAYS = (0.5, 1.0)
 THSCODE_RE = re.compile(r"^\d{6}\.(?:SH|SZ|BJ)$")
+YFINANCE_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,31}$")
+FRED_SERIES_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,127}$")
 SOURCE_ID_RE = re.compile(r"^S\d{2,4}$")
 REPORT_RE = re.compile(r"^(?:19|20)\d{2}-[1-4]$")
+DATA_PYTHON_ENV = "MONEY_CRAFT_DATA_PYTHON"
+DATA_RUNTIME_GUARD = "MONEY_CRAFT_DATA_RUNTIME_ACTIVE"
 TRANSIENT_BUSINESS_CODES = {4001, 5002, 5003}
 AUTH_CODES = {2001, 2003}
 
@@ -85,6 +98,7 @@ class ProviderResult:
     payload: dict[str, Any]
     raw_response: bytes
     fetched_at: str
+    provider: str = "fuyao"
 
 
 @dataclass(frozen=True)
@@ -133,8 +147,18 @@ def sanitize_message(message: Any, secrets: tuple[str, ...] = ()) -> str:
     return cleaned
 
 
-def fuyao_api_key_path(home: Path | None = None) -> Path:
-    return (home if home is not None else Path.home()) / API_KEY_FILE_RELATIVE
+def fuyao_api_key_path(
+    home: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> Path:
+    try:
+        return runtime_paths.config_file("fuyao-api-key", environment, home=home)
+    except runtime_paths.RuntimePathError as exc:
+        raise MoneyCraftError(
+            "invalid_configuration",
+            sanitize_message(exc),
+            exit_code=EXIT_CONFIG,
+        ) from exc
 
 
 def load_fuyao_credential(
@@ -151,37 +175,38 @@ def load_fuyao_credential(
             capture_label=f"environment:{API_KEY_ENV}",
         )
 
-    path = fuyao_api_key_path(home)
+    path = fuyao_api_key_path(home, environ)
+    path_display = runtime_paths.display_path(path, home=home)
     try:
         metadata = path.lstat()
     except FileNotFoundError as exc:
         raise MoneyCraftError(
             "missing_configuration",
-            f"configure {API_KEY_ENV} or {API_KEY_FILE_DISPLAY}",
+            f"configure {API_KEY_ENV} or {path_display}",
             exit_code=EXIT_CONFIG,
         ) from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise MoneyCraftError(
             "invalid_configuration",
-            f"{API_KEY_FILE_DISPLAY} must be a regular file, not a symlink",
+            f"{path_display} must be a regular file, not a symlink",
             exit_code=EXIT_CONFIG,
         )
     if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
         raise MoneyCraftError(
             "invalid_configuration",
-            f"{API_KEY_FILE_DISPLAY} must be owned by the current user",
+            f"{path_display} must be owned by the current user",
             exit_code=EXIT_CONFIG,
         )
     if stat.S_IMODE(metadata.st_mode) & 0o077:
         raise MoneyCraftError(
             "invalid_configuration",
-            f"{API_KEY_FILE_DISPLAY} permissions must be 0600 or stricter",
+            f"{path_display} permissions must be 0600 or stricter",
             exit_code=EXIT_CONFIG,
         )
     if metadata.st_size < 1 or metadata.st_size > MAX_API_KEY_BYTES:
         raise MoneyCraftError(
             "invalid_configuration",
-            f"{API_KEY_FILE_DISPLAY} has an invalid size",
+            f"{path_display} has an invalid size",
             exit_code=EXIT_CONFIG,
         )
     try:
@@ -189,19 +214,19 @@ def load_fuyao_credential(
     except (OSError, UnicodeDecodeError) as exc:
         raise MoneyCraftError(
             "invalid_configuration",
-            f"cannot read {API_KEY_FILE_DISPLAY}: {sanitize_message(exc)}",
+            f"cannot read {path_display}: {sanitize_message(exc)}",
             exit_code=EXIT_CONFIG,
         ) from exc
     if not value or "\n" in value or "\r" in value:
         raise MoneyCraftError(
             "invalid_configuration",
-            f"{API_KEY_FILE_DISPLAY} must contain exactly one non-empty line",
+            f"{path_display} must contain exactly one non-empty line",
             exit_code=EXIT_CONFIG,
         )
     return FuyaoCredential(
         api_key=value,
         source="secure-file",
-        capture_label=f"secure-file:{API_KEY_FILE_DISPLAY}",
+        capture_label=f"secure-file:{path_display}",
     )
 
 
@@ -442,7 +467,9 @@ def validate_range(start: str, end: str, *, max_years: int | None = None) -> Non
         )
 
 
-def parse_thscodes(value: str, *, maximum: int = 100) -> list[str]:
+def parse_thscodes(value: str | None, *, maximum: int = 100) -> list[str]:
+    if not isinstance(value, str):
+        raise MoneyCraftError("usage_error", "a complete Fuyao thscode is required", exit_code=EXIT_USAGE)
     raw_items = [item.strip().upper() for item in value.split(",")]
     if not raw_items or any(not item for item in raw_items):
         raise MoneyCraftError("usage_error", "thscodes must not be empty", exit_code=EXIT_USAGE)
@@ -465,6 +492,127 @@ def parse_thscodes(value: str, *, maximum: int = 100) -> list[str]:
             exit_code=EXIT_USAGE,
         )
     return result
+
+
+def parse_yfinance_symbol(value: str | None) -> str:
+    symbol = value.strip().upper() if isinstance(value, str) else ""
+    if not YFINANCE_SYMBOL_RE.fullmatch(symbol):
+        raise MoneyCraftError(
+            "usage_error",
+            "yfinance symbol must be an explicit Yahoo Finance equity symbol such as NVDA or 0700.HK",
+            exit_code=EXIT_USAGE,
+        )
+    return symbol
+
+
+def parse_fred_series_id(value: str | None) -> str:
+    series_id = value.strip().upper() if isinstance(value, str) else ""
+    if not FRED_SERIES_ID_RE.fullmatch(series_id):
+        raise MoneyCraftError(
+            "usage_error",
+            "FRED series id must be an explicit identifier such as FEDFUNDS or T10YIE",
+            exit_code=EXIT_USAGE,
+        )
+    return series_id
+
+
+def preferred_data_python(
+    environment: Mapping[str, str] | None = None,
+    *,
+    home: Path | None = None,
+) -> tuple[Path, str]:
+    try:
+        return runtime_paths.preferred_runtime_python("data", environment, home=home)
+    except runtime_paths.RuntimePathError as exc:
+        raise MoneyCraftError(
+            "invalid_configuration",
+            sanitize_message(exc),
+            exit_code=EXIT_CONFIG,
+        ) from exc
+
+
+def preferred_report_python(
+    environment: Mapping[str, str] | None = None,
+    *,
+    home: Path | None = None,
+) -> tuple[Path, str]:
+    try:
+        return runtime_paths.preferred_runtime_python("report", environment, home=home)
+    except runtime_paths.RuntimePathError as exc:
+        raise MoneyCraftError(
+            "invalid_configuration",
+            sanitize_message(exc),
+            exit_code=EXIT_CONFIG,
+        ) from exc
+
+
+def probe_python_modules(
+    python: Path,
+    modules: tuple[tuple[str, str], ...],
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[dict[str, bool], str | None]:
+    """Inspect optional modules in the interpreter that will actually use them."""
+
+    unavailable = {name: False for name, _module in modules}
+    if not python.is_file() or not os.access(python, os.X_OK):
+        return unavailable, None
+    if Path(sys.executable).absolute() == python.absolute():
+        return {
+            name: importlib.util.find_spec(module) is not None
+            for name, module in modules
+        }, None
+
+    probe = (
+        "import importlib.util,json,sys;"
+        "print(json.dumps({name: importlib.util.find_spec(module) is not None "
+        "for name, module in zip(sys.argv[1::2], sys.argv[2::2])}))"
+    )
+    arguments = [item for pair in modules for item in pair]
+    try:
+        completed = runner(
+            [str(python), "-c", probe, *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return unavailable, f"preferred runtime dependency probe failed: {type(exc).__name__}"
+    if completed.returncode != 0:
+        return unavailable, f"preferred runtime dependency probe exited {completed.returncode}"
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return unavailable, "preferred runtime dependency probe returned invalid JSON"
+    if not isinstance(payload, dict) or set(payload) != set(unavailable) or any(
+        not isinstance(value, bool) for value in payload.values()
+    ):
+        return unavailable, "preferred runtime dependency probe returned an invalid contract"
+    return {name: payload[name] for name in unavailable}, None
+
+
+def maybe_reexec_data_runtime() -> None:
+    if os.environ.get(DATA_RUNTIME_GUARD) == "1":
+        return
+    candidate, source = preferred_data_python()
+    if not source.startswith("environment:") and sys.prefix != sys.base_prefix:
+        return
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        return
+    try:
+        if Path(sys.prefix).resolve() == candidate.parent.parent.resolve():
+            return
+    except OSError:
+        pass
+    environment = dict(os.environ)
+    environment[DATA_RUNTIME_GUARD] = "1"
+    environment["MONEY_CRAFT_DATA_RUNTIME_SOURCE"] = source
+    os.execve(
+        str(candidate),
+        [str(candidate), str(Path(__file__).resolve()), *sys.argv[1:]],
+        environment,
+    )
 
 
 def validate_capture_args(capture_dir: str | None, source_id: str | None) -> tuple[Path, str] | None:
@@ -518,7 +666,7 @@ def capture_result(
                 )
         request_payload = {
             "schema": "money-craft.sanitized-request.v1",
-            "provider": "fuyao",
+            "provider": result.provider,
             "operation": result.operation,
             "method": "GET",
             "path": result.path,
@@ -530,7 +678,7 @@ def capture_result(
         manifest = {
             "schema": "money-craft.source-capture.v1",
             "source_id": source_id,
-            "provider": "fuyao",
+            "provider": result.provider,
             "operation": result.operation,
             "fetched_at": result.fetched_at,
             "request_id": result.payload.get("request_id"),
@@ -578,6 +726,14 @@ def add_capture_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-id")
 
 
+def add_provider_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--provider", choices=["fuyao", "yfinance", "fred"], default="fuyao")
+
+
+def add_fred_provider_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--provider", choices=["fred"], default="fred")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -589,24 +745,33 @@ def build_parser() -> argparse.ArgumentParser:
     data = subparsers.add_parser("data")
     data_subparsers = data.add_subparsers(dest="data_command", required=True)
     search = data_subparsers.add_parser("search")
+    add_provider_option(search)
     search.add_argument("--query", required=True)
     search.add_argument("--limit", type=int, default=10)
     add_capture_options(search)
     snapshot = data_subparsers.add_parser("snapshot")
-    snapshot.add_argument("--thscodes", required=True)
+    add_provider_option(snapshot)
+    snapshot.add_argument("--thscodes")
+    snapshot.add_argument("--symbol")
     add_capture_options(snapshot)
     history = data_subparsers.add_parser("history")
-    history.add_argument("--thscode", required=True)
+    add_provider_option(history)
+    history.add_argument("--thscode")
+    history.add_argument("--symbol")
     history.add_argument("--start", required=True)
     history.add_argument("--end", required=True)
     history.add_argument("--interval", choices=["1d"], default="1d")
-    history.add_argument("--adjust", choices=["none", "forward", "backward"], default="forward")
+    history.add_argument("--adjust", choices=["none", "forward", "backward", "auto"], default="forward")
     add_capture_options(history)
     valuations = data_subparsers.add_parser("valuations")
-    valuations.add_argument("--thscodes", required=True)
+    add_provider_option(valuations)
+    valuations.add_argument("--thscodes")
+    valuations.add_argument("--symbol")
     add_capture_options(valuations)
     financials = data_subparsers.add_parser("financials")
-    financials.add_argument("--thscode", required=True)
+    add_provider_option(financials)
+    financials.add_argument("--thscode")
+    financials.add_argument("--symbol")
     financials.add_argument("--statement", choices=["income", "balance", "cash-flow"], required=True)
     financials.add_argument("--period", choices=["annual", "quarterly"], default="annual")
     financials.add_argument("--limit", type=int)
@@ -614,18 +779,47 @@ def build_parser() -> argparse.ArgumentParser:
     financials.add_argument("--end")
     add_capture_options(financials)
     indicators = data_subparsers.add_parser("indicators")
+    add_provider_option(indicators)
     indicators.add_argument("--thscode", required=True)
     indicators.add_argument("--report", required=True)
     add_capture_options(indicators)
     actions = data_subparsers.add_parser("corporate-actions")
-    actions.add_argument("--thscode", required=True)
+    add_provider_option(actions)
+    actions.add_argument("--thscode")
+    actions.add_argument("--symbol")
     actions.add_argument("--start")
     actions.add_argument("--end")
     add_capture_options(actions)
     calendar = data_subparsers.add_parser("calendar")
+    add_provider_option(calendar)
     calendar.add_argument("--start")
     calendar.add_argument("--end")
     add_capture_options(calendar)
+    series = data_subparsers.add_parser("series")
+    add_fred_provider_option(series)
+    series.add_argument("--series-id", required=True)
+    series.add_argument("--as-known-on")
+    add_capture_options(series)
+    observations = data_subparsers.add_parser("observations")
+    add_fred_provider_option(observations)
+    observations.add_argument("--series-id", required=True)
+    observations.add_argument("--start")
+    observations.add_argument("--end")
+    observations.add_argument("--as-known-on")
+    observations.add_argument(
+        "--units",
+        choices=["lin", "chg", "ch1", "pch", "pc1", "pca", "cch", "cca", "log"],
+        default="lin",
+    )
+    observations.add_argument("--limit", type=int, default=10000)
+    add_capture_options(observations)
+    vintages = data_subparsers.add_parser("vintages")
+    add_fred_provider_option(vintages)
+    vintages.add_argument("--series-id", required=True)
+    vintages.add_argument("--start")
+    vintages.add_argument("--end")
+    vintages.add_argument("--limit", type=int, default=1000)
+    add_capture_options(vintages)
 
     audit = subparsers.add_parser("audit")
     audit_subparsers = audit.add_subparsers(dest="audit_command", required=True)
@@ -639,11 +833,18 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("plan", "init"):
         research_command = research_subparsers.add_parser(name)
         research_command.add_argument("--security", required=True)
-        research_command.add_argument("--thscode", required=True)
+        research_command.add_argument("--security-id")
+        research_command.add_argument("--thscode")
+        research_command.add_argument("--base-currency")
         research_command.add_argument("--as-of", required=True)
         research_command.add_argument("--latest-report", required=True)
+        research_command.add_argument("--latest-report-end")
+        research_command.add_argument("--latest-annual-report")
         research_command.add_argument(
             "--provider-mode", choices=["auto", "required", "disabled"], default="auto"
+        )
+        research_command.add_argument(
+            "--provider", choices=["auto", "fuyao", "yfinance"], default="auto"
         )
         if name == "init":
             location = research_command.add_mutually_exclusive_group()
@@ -728,6 +929,32 @@ def doctor_payload() -> dict[str, Any]:
         credential = load_fuyao_credential()
     except MoneyCraftError as exc:
         credential_error = exc
+    fred_credential: fred_adapter.FredCredential | None = None
+    fred_credential_error: fred_adapter.FredAdapterError | None = None
+    try:
+        fred_credential = fred_adapter.load_credential()
+    except fred_adapter.FredAdapterError as exc:
+        fred_credential_error = exc
+    data_python, data_python_source = preferred_data_python()
+    report_python, report_python_source = preferred_report_python()
+    report_dependencies, report_dependency_probe_error = probe_python_modules(
+        report_python,
+        (
+            ("markdown", "markdown"),
+            ("weasyprint", "weasyprint"),
+            ("pypdf", "pypdf"),
+        ),
+    )
+    try:
+        config_root, config_root_source = runtime_paths.config_home()
+        data_root, data_root_source = runtime_paths.data_home()
+        cache_root, cache_root_source = runtime_paths.cache_home()
+    except runtime_paths.RuntimePathError as exc:
+        raise MoneyCraftError(
+            "invalid_configuration",
+            sanitize_message(exc),
+            exit_code=EXIT_CONFIG,
+        ) from exc
     research_output_error: research_run.ResearchRunError | None = None
     try:
         research_output_root, research_output_source = research_run.output_root()
@@ -750,6 +977,10 @@ def doctor_payload() -> dict[str, Any]:
                     "SKILL.md",
                     "VERSION",
                     "scripts/money_craft.py",
+                    "scripts/fred_adapter.py",
+                    "scripts/runtime_paths.py",
+                    "scripts/yfinance_adapter.py",
+                    "requirements-yfinance.txt",
                     "scripts/report_renderer.py",
                     "reporting/report.html",
                     "reporting/report.css",
@@ -757,9 +988,36 @@ def doctor_payload() -> dict[str, Any]:
                 )
             ),
         },
+        "data_runtime": {
+            "preferred_python": str(data_python),
+            "configuration_source": data_python_source,
+            "available": data_python.is_file() and os.access(data_python, os.X_OK),
+            "active": sys.prefix != sys.base_prefix and Path(sys.prefix) == data_python.parent.parent,
+            "environment_variable": DATA_PYTHON_ENV,
+            "network_checked": False,
+        },
+        "runtime_paths": {
+            "config_home": str(config_root),
+            "config_home_source": config_root_source,
+            "data_home": str(data_root),
+            "data_home_source": data_root_source,
+            "cache_home": str(cache_root),
+            "cache_home_source": cache_root_source,
+            "explicit_env_file": os.environ.get(runtime_paths.ENV_FILE_ACTIVE_ENV),
+            "environment_variables": {
+                "config_home": runtime_paths.CONFIG_HOME_ENV,
+                "data_home": runtime_paths.DATA_HOME_ENV,
+                "cache_home": runtime_paths.CACHE_HOME_ENV,
+                "env_file": runtime_paths.ENV_FILE_ENV,
+            },
+        },
         "report_renderer": {
             "theme": report_renderer.CANONICAL_THEME,
             "layout_mode": report_renderer.LAYOUT_MODE,
+            "preferred_python": str(report_python),
+            "configuration_source": report_python_source,
+            "available": report_python.is_file() and os.access(report_python, os.X_OK),
+            "environment_variable": runtime_paths.REPORT_PYTHON_ENV,
             "assets_present": all(
                 path.is_file()
                 for path in (
@@ -768,21 +1026,15 @@ def doctor_payload() -> dict[str, Any]:
                     report_renderer.DEFAULT_SCRIPT,
                 )
             ),
-            "optional_dependencies": {
-                name: importlib.util.find_spec(module) is not None
-                for name, module in (
-                    ("markdown", "markdown"),
-                    ("weasyprint", "weasyprint"),
-                    ("pypdf", "pypdf"),
-                )
-            },
+            "optional_dependencies": report_dependencies,
+            "dependency_probe_error": report_dependency_probe_error,
             "network_checked": False,
         },
         "fuyao": {
             "configured": credential is not None,
             "configuration_source": credential.source if credential else None,
             "environment_variable": API_KEY_ENV,
-            "secure_file": API_KEY_FILE_DISPLAY,
+            "secure_file": runtime_paths.display_path(fuyao_api_key_path()),
             "configuration_error": (
                 {
                     "kind": credential_error.kind,
@@ -791,6 +1043,30 @@ def doctor_payload() -> dict[str, Any]:
                 if credential_error and credential_error.kind != "missing_configuration"
                 else None
             ),
+            "network_checked": False,
+        },
+        "yfinance": {
+            "configured": importlib.util.find_spec("yfinance") is not None,
+            "version": yfinance_adapter.installed_version(),
+            "requirements": "skills/money-craft/requirements-yfinance.txt",
+            "adapter_scope": "Hong Kong and U.S. secondary market data",
+            "official_filings_remain_primary": True,
+            "network_checked": False,
+        },
+        "fred": {
+            "configured": fred_credential is not None,
+            "configuration_source": fred_credential.source if fred_credential else None,
+            "environment_variable": fred_adapter.API_KEY_ENV,
+            "secure_file": runtime_paths.display_path(fred_adapter.api_key_path()),
+            "configuration_error": (
+                {
+                    "kind": fred_credential_error.kind,
+                    "message": sanitize_message(fred_credential_error),
+                }
+                if fred_credential_error and fred_credential_error.kind != "missing_configuration"
+                else None
+            ),
+            "adapter_scope": "FRED and ALFRED economic time series and vintages",
             "network_checked": False,
         },
         "research_output": {
@@ -863,7 +1139,7 @@ Official facts change.
             thscode="600519.SH",
             as_of="2026-08-23",
             latest_report="2026-2",
-            provider={"mode": "disabled", "configured": False, "network_checked": False},
+            provider={"mode": "auto", "configured": True, "network_checked": False},
             today=dt.date(2026, 8, 23),
         )
         if plan["latest_annual_period"] != "2025-4" or len(plan["provider_operations"]) != 14:
@@ -880,6 +1156,25 @@ Official facts change.
         ]:
             raise AssertionError("research run case derivation failed")
         checks.append("research-run-case")
+        global_plan = company_research_plan(
+            security="Global Example",
+            security_id="US-NASDAQ:EXAMPLE",
+            base_currency="USD",
+            as_of="2026-08-23",
+            latest_report="2026-2",
+            latest_report_end="2026-06-30",
+            latest_annual_report="2025-4",
+            provider={"mode": "auto", "configured": False, "network_checked": False},
+            today=dt.date(2026, 8, 23),
+        )
+        if (
+            global_plan["identity"]["security_id"] != "US-NASDAQ:EXAMPLE"
+            or global_plan["identity"]["base_currency"] != "USD"
+            or global_plan["provider_operations"]
+            or global_plan["provider"]["availability"] != "not-configured"
+        ):
+            raise AssertionError("global security research plan fixture failed")
+        checks.append("global-security-research-plan")
         health = tracking_workflow.health_contract(
             {
                 "hypotheses": [
@@ -921,18 +1216,66 @@ Official facts change.
 
 def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
     command = args.data_command
+    provider = getattr(args, "provider", "fuyao")
+    args.resolved_provider = provider
     output_parameters: dict[str, Any]
+    fred_commands = {"search", "series", "observations", "vintages"}
+    if provider == "fred" and command not in fred_commands:
+        raise MoneyCraftError(
+            "usage_error",
+            f"FRED does not support the {command} market-data operation",
+            exit_code=EXIT_USAGE,
+        )
+    if command in {"series", "observations", "vintages"} and provider != "fred":
+        raise MoneyCraftError(
+            "usage_error",
+            f"{command} is a FRED-only macro-data operation",
+            exit_code=EXIT_USAGE,
+        )
     if command == "search":
         query = args.query.strip()
         if not query or len(query) > 128 or args.limit < 1 or args.limit > 50:
             raise MoneyCraftError("usage_error", "search query/limit is invalid", exit_code=EXIT_USAGE)
+        if provider == "fred":
+            params = {"search_text": query, "limit": args.limit}
+            return "search", "fred://series/search", params, {"query": query, "limit": args.limit}
+        if provider == "yfinance":
+            params = {"query": query, "limit": args.limit}
+            return "search", "yfinance://search", params, dict(params)
         params = {"q": query, "asset_type": "a-share", "limit": args.limit}
         return "search", "/api/meta/tickers/search", params, dict(params)
     if command == "snapshot":
+        if provider == "yfinance":
+            symbol = parse_yfinance_symbol(args.symbol)
+            params = {"symbol": symbol}
+            return "snapshot", "yfinance://snapshot", params, dict(params)
+        if args.symbol is not None:
+            raise MoneyCraftError("usage_error", "Fuyao snapshot uses --thscodes", exit_code=EXIT_USAGE)
         thscodes = parse_thscodes(args.thscodes)
         params = {"thscodes": ",".join(thscodes)}
         return "snapshot", "/api/a-share/prices/snapshot", params, dict(params)
     if command == "history":
+        if provider == "yfinance":
+            if args.adjust == "backward":
+                raise MoneyCraftError(
+                    "usage_error",
+                    "yfinance does not expose Money Craft's backward-adjustment contract; use auto or none",
+                    exit_code=EXIT_USAGE,
+                )
+            symbol = parse_yfinance_symbol(args.symbol)
+            validate_range(args.start, args.end, max_years=10)
+            params = {
+                "symbol": symbol,
+                "interval": args.interval,
+                "start": args.start,
+                "end": args.end,
+                "adjust": "auto" if args.adjust in {"auto", "forward"} else "none",
+            }
+            return "history", "yfinance://history", params, dict(params)
+        if args.symbol is not None or args.adjust == "auto":
+            raise MoneyCraftError(
+                "usage_error", "Fuyao history uses --thscode and forward/backward/none adjustment", exit_code=EXIT_USAGE
+            )
         thscode = parse_thscodes(args.thscode, maximum=1)[0]
         validate_range(args.start, args.end, max_years=10)
         params = {
@@ -946,17 +1289,36 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
         output_parameters.update({"start_date": args.start, "end_date": args.end})
         return "history", "/api/a-share/prices/historical", params, output_parameters
     if command == "valuations":
+        if provider == "yfinance":
+            symbol = parse_yfinance_symbol(args.symbol)
+            params = {"symbol": symbol}
+            return "valuations", "yfinance://valuations", params, dict(params)
+        if args.symbol is not None:
+            raise MoneyCraftError("usage_error", "Fuyao valuations uses --thscodes", exit_code=EXIT_USAGE)
         thscodes = parse_thscodes(args.thscodes, maximum=100)
         params = {"thscodes": ",".join(thscodes)}
         return "valuations", "/api/a-share/valuations/snapshot", params, dict(params)
     if command == "financials":
-        thscode = parse_thscodes(args.thscode, maximum=1)[0]
         has_start = args.start is not None
         has_end = args.end is not None
         if has_start != has_end:
             raise MoneyCraftError("usage_error", "financials requires both --start and --end", exit_code=EXIT_USAGE)
         if has_start and args.limit is not None:
             raise MoneyCraftError("usage_error", "financials limit conflicts with date range", exit_code=EXIT_USAGE)
+        if provider == "yfinance":
+            if has_start:
+                raise MoneyCraftError(
+                    "usage_error", "yfinance financial statements use period and optional limit, not a date range", exit_code=EXIT_USAGE
+                )
+            symbol = parse_yfinance_symbol(args.symbol)
+            limit = 4 if args.limit is None else args.limit
+            if limit < 1 or limit > 20:
+                raise MoneyCraftError("usage_error", "financials limit must be 1..20", exit_code=EXIT_USAGE)
+            params = {"symbol": symbol, "period": args.period, "limit": limit}
+            return f"financials.{args.statement}", f"yfinance://financials/{args.statement}", params, dict(params)
+        if args.symbol is not None:
+            raise MoneyCraftError("usage_error", "Fuyao financials uses --thscode", exit_code=EXIT_USAGE)
+        thscode = parse_thscodes(args.thscode, maximum=1)[0]
         params = {"thscode": thscode, "period": args.period}
         output_parameters = dict(params)
         if has_start:
@@ -977,22 +1339,32 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
         }
         return f"financials.{args.statement}", paths[args.statement], params, output_parameters
     if command == "indicators":
+        if provider != "fuyao":
+            raise MoneyCraftError("usage_error", "financial indicators are only available from Fuyao", exit_code=EXIT_USAGE)
         thscode = parse_thscodes(args.thscode, maximum=1)[0]
         if not REPORT_RE.fullmatch(args.report):
             raise MoneyCraftError("usage_error", "report must match YYYY-1 through YYYY-4", exit_code=EXIT_USAGE)
         params = {"thscode": thscode, "report": args.report}
         return "indicators", "/api/a-share/financials/indicators", params, dict(params)
     if command == "corporate-actions":
-        thscode = parse_thscodes(args.thscode, maximum=1)[0]
         if args.start and args.end:
             validate_range(args.start, args.end)
         elif args.start:
             parse_iso_date(args.start)
         elif args.end:
             parse_iso_date(args.end)
+        if provider == "yfinance":
+            symbol = parse_yfinance_symbol(args.symbol)
+            params = {"symbol": symbol, "start": args.start, "end": args.end}
+            return "corporate-actions", "yfinance://corporate-actions", params, dict(params)
+        if args.symbol is not None:
+            raise MoneyCraftError("usage_error", "Fuyao corporate actions uses --thscode", exit_code=EXIT_USAGE)
+        thscode = parse_thscodes(args.thscode, maximum=1)[0]
         params = {"thscode": thscode, "from": args.start, "to": args.end}
         return "corporate-actions", "/api/a-share/corporate-actions/adjustment-factors", params, dict(params)
     if command == "calendar":
+        if provider != "fuyao":
+            raise MoneyCraftError("usage_error", "trading calendar is only available from Fuyao", exit_code=EXIT_USAGE)
         if args.start and args.end:
             validate_range(args.start, args.end)
         elif args.start:
@@ -1000,27 +1372,158 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
         elif args.end:
             parse_iso_date(args.end)
         return "calendar", "/api/a-share/calendar/trading-days", {}, {"start": args.start, "end": args.end}
+    if command == "series":
+        series_id = parse_fred_series_id(args.series_id)
+        params: dict[str, Any] = {"series_id": series_id}
+        if args.as_known_on:
+            parse_iso_date(args.as_known_on)
+            params.update({"realtime_start": args.as_known_on, "realtime_end": args.as_known_on})
+        return "series", "fred://series", params, {
+            "series_id": series_id,
+            "as_known_on": args.as_known_on,
+        }
+    if command == "observations":
+        series_id = parse_fred_series_id(args.series_id)
+        if args.start and args.end:
+            validate_range(args.start, args.end)
+        elif args.start:
+            parse_iso_date(args.start)
+        elif args.end:
+            parse_iso_date(args.end)
+        if args.as_known_on:
+            parse_iso_date(args.as_known_on)
+        if args.limit < 1 or args.limit > 10000:
+            raise MoneyCraftError("usage_error", "FRED observations limit must be 1..10000", exit_code=EXIT_USAGE)
+        params = {
+            "series_id": series_id,
+            "observation_start": args.start,
+            "observation_end": args.end,
+            "units": args.units,
+            "limit": args.limit,
+            "realtime_start": args.as_known_on,
+            "realtime_end": args.as_known_on,
+        }
+        return "observations", "fred://series/observations", params, {
+            "series_id": series_id,
+            "start": args.start,
+            "end": args.end,
+            "units": args.units,
+            "limit": args.limit,
+            "as_known_on": args.as_known_on,
+        }
+    if command == "vintages":
+        series_id = parse_fred_series_id(args.series_id)
+        if args.start and args.end:
+            validate_range(args.start, args.end)
+        elif args.start:
+            parse_iso_date(args.start)
+        elif args.end:
+            parse_iso_date(args.end)
+        if args.limit < 1 or args.limit > 10000:
+            raise MoneyCraftError("usage_error", "FRED vintages limit must be 1..10000", exit_code=EXIT_USAGE)
+        params = {
+            "series_id": series_id,
+            "realtime_start": args.start,
+            "realtime_end": args.end,
+            "limit": args.limit,
+        }
+        return "vintages", "fred://series/vintagedates", params, {
+            "series_id": series_id,
+            "start": args.start,
+            "end": args.end,
+            "limit": args.limit,
+        }
     raise MoneyCraftError("usage_error", f"unsupported data command: {command}", exit_code=EXIT_USAGE)
 
 
 def run_data(args: argparse.Namespace) -> int:
     operation, path, params, output_parameters = prepare_operation(args)
+    provider = args.resolved_provider
     args.resolved_operation = operation
     args.sanitized_parameters = output_parameters
-    credential = load_fuyao_credential()
-    client = FuyaoClient(credential.api_key)
-    result = client.request(operation, path, params)
+    authentication = "none"
+    forbidden_values: tuple[str, ...] = ()
+    if provider == "fuyao":
+        credential = load_fuyao_credential()
+        authentication = credential.capture_label
+        forbidden_values = (credential.api_key,)
+        client = FuyaoClient(credential.api_key)
+        result = client.request(operation, path, params)
+    elif provider == "fred":
+        try:
+            fred_credential = fred_adapter.load_credential()
+            adapter_result = fred_adapter.FredClient(
+                fred_credential.api_key,
+                user_agent=f"money-craft/{VERSION}",
+            ).request(operation, params)
+        except fred_adapter.FredAdapterError as exc:
+            if exc.kind in {"missing_configuration", "invalid_configuration"}:
+                exit_code = EXIT_CONFIG
+            elif exc.retryable:
+                exit_code = EXIT_TRANSIENT
+            elif exc.kind in {"malformed_response", "response_too_large"}:
+                exit_code = EXIT_SCHEMA
+            else:
+                exit_code = EXIT_PROVIDER
+            raise MoneyCraftError(
+                exc.kind,
+                sanitize_message(exc),
+                code=exc.code,
+                retryable=exc.retryable,
+                exit_code=exit_code,
+            ) from exc
+        authentication = fred_credential.capture_label
+        forbidden_values = (fred_credential.api_key,)
+        result = ProviderResult(
+            operation=operation,
+            path=adapter_result.path,
+            parameters=params,
+            payload={"request_id": None, "data": adapter_result.data},
+            raw_response=adapter_result.raw_response,
+            fetched_at=adapter_result.fetched_at,
+            provider="fred",
+        )
+    else:
+        try:
+            adapter_result = yfinance_adapter.YFinanceClient().request(operation, params)
+        except yfinance_adapter.YFinanceAdapterError as exc:
+            raise MoneyCraftError(
+                exc.kind,
+                sanitize_message(exc),
+                retryable=exc.retryable,
+                exit_code=EXIT_TRANSIENT if exc.retryable else EXIT_PROVIDER,
+            ) from exc
+        result = ProviderResult(
+            operation=operation,
+            path=path,
+            parameters=params,
+            payload={"request_id": None, "data": adapter_result.data},
+            raw_response=adapter_result.adapter_export,
+            fetched_at=adapter_result.fetched_at,
+            provider="yfinance",
+        )
     data = result.payload.get("data")
     warnings: list[str] = []
-    if args.data_command == "calendar" and (args.start or args.end):
+    if provider == "fuyao" and args.data_command == "calendar" and (args.start or args.end):
         data = filter_calendar(data, args.start, args.end)
         warnings.append("calendar date range was filtered locally; the provider endpoint has a fixed one-year window")
+    if provider == "yfinance":
+        warnings.append(
+            "yfinance/Yahoo data is secondary research data for personal use; verify decision-critical facts against official filings"
+        )
+    if provider == "fred":
+        warnings.extend(
+            [
+                "This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.",
+                "FRED series can be revised and third-party series may have separate rights; preserve metadata and use ALFRED as-known-on dates for historical claims.",
+            ]
+        )
     data_object = result.payload.get("data")
     source_timestamp = data_object.get("timestamp") if isinstance(data_object, dict) else None
     response: dict[str, Any] = {
         "schema": "money-craft.data-response.v1",
         "ok": True,
-        "provider": "fuyao",
+        "provider": provider,
         "operation": operation,
         "request_id": result.payload.get("request_id"),
         "fetched_at": result.fetched_at,
@@ -1036,8 +1539,8 @@ def run_data(args: argparse.Namespace) -> int:
             capture_args[1],
             result,
             output_parameters=output_parameters,
-            authentication=credential.capture_label,
-            forbidden_values=(credential.api_key,),
+            authentication=authentication,
+            forbidden_values=forbidden_values,
         )
         response["capture"] = {
             "source_id": capture_args[1],
@@ -1065,17 +1568,54 @@ def run_audit(args: argparse.Namespace) -> int:
     return 0 if result["valid"] else EXIT_PROVIDER
 
 
-def research_provider(mode: str) -> dict[str, Any]:
+def research_provider(mode: str, *, adapter: str, security_supported: bool) -> dict[str, Any]:
     if mode == "disabled":
-        return {"mode": mode, "configured": False, "configuration_source": None, "network_checked": False}
+        return {
+            "mode": mode,
+            "adapter": adapter,
+            "configured": False,
+            "configuration_source": None,
+            "network_checked": False,
+        }
+    if not security_supported:
+        return {
+            "mode": mode,
+            "adapter": adapter,
+            "configured": False,
+            "configuration_source": None,
+            "network_checked": False,
+        }
+    if adapter == "yfinance":
+        configured = importlib.util.find_spec("yfinance") is not None
+        if not configured and mode == "required":
+            raise WorkflowError(
+                "missing_optional_dependency",
+                "install skills/money-craft/requirements-yfinance.txt in the active Python environment",
+                exit_code=EXIT_CONFIG,
+            )
+        return {
+            "mode": mode,
+            "adapter": adapter,
+            "configured": configured,
+            "configuration_source": "python-package" if configured else None,
+            "package_version": yfinance_adapter.installed_version(),
+            "network_checked": False,
+        }
     try:
         credential = load_fuyao_credential()
     except MoneyCraftError as exc:
         if exc.kind == "missing_configuration" and mode == "auto":
-            return {"mode": mode, "configured": False, "configuration_source": None, "network_checked": False}
+            return {
+                "mode": mode,
+                "adapter": adapter,
+                "configured": False,
+                "configuration_source": None,
+                "network_checked": False,
+            }
         raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
     return {
         "mode": mode,
+        "adapter": adapter,
         "configured": True,
         "configuration_source": credential.source,
         "network_checked": False,
@@ -1085,12 +1625,30 @@ def research_provider(mode: str) -> dict[str, Any]:
 def run_research(args: argparse.Namespace) -> int:
     try:
         if args.research_command in {"plan", "init"}:
+            supports_fuyao = bool(args.thscode)
+            if not supports_fuyao and args.security_id:
+                supports_fuyao = thscode_from_security_id(args.security_id) is not None
+            supports_yfinance = bool(
+                args.security_id and yfinance_symbol_from_security_id(args.security_id) is not None
+            )
+            adapter = args.provider
+            if adapter == "auto":
+                adapter = "fuyao" if supports_fuyao else "yfinance"
+            security_supported = supports_fuyao if adapter == "fuyao" else supports_yfinance
             plan = company_research_plan(
                 security=args.security,
+                security_id=args.security_id,
                 thscode=args.thscode,
+                base_currency=args.base_currency,
                 as_of=args.as_of,
                 latest_report=args.latest_report,
-                provider=research_provider(args.provider_mode),
+                latest_report_end=args.latest_report_end,
+                latest_annual_report=args.latest_annual_report,
+                provider=research_provider(
+                    args.provider_mode,
+                    adapter=adapter,
+                    security_supported=security_supported,
+                ),
             )
             if args.research_command == "plan":
                 result = plan
@@ -1111,13 +1669,26 @@ def run_research(args: argparse.Namespace) -> int:
             print_json(result)
             return 0
         if args.research_command == "collect":
-            _root, plan, _case, _state = research_run.load_workspace(args.workspace)
+            _root, plan, case, _state = research_run.load_workspace(args.workspace)
+            adapter = str(plan.get("provider", {}).get("adapter", "fuyao"))
             if plan.get("provider", {}).get("mode") == "disabled":
-                raise WorkflowError("provider_disabled", "research workspace explicitly disables the Fuyao provider")
-            try:
-                load_fuyao_credential()
-            except MoneyCraftError as exc:
-                raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
+                raise WorkflowError("provider_disabled", "research workspace explicitly disables the structured-data provider")
+            if not case["operations"]:
+                raise WorkflowError(
+                    "provider_unavailable",
+                    "research workspace has no executable provider operations; use official evidence imports",
+                )
+            if adapter == "fuyao":
+                try:
+                    load_fuyao_credential()
+                except MoneyCraftError as exc:
+                    raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
+            elif importlib.util.find_spec("yfinance") is None:
+                raise WorkflowError(
+                    "missing_optional_dependency",
+                    "install skills/money-craft/requirements-yfinance.txt in the active Python environment",
+                    exit_code=EXIT_CONFIG,
+                )
             result = research_run.collect_workspace(
                 args.workspace,
                 runtime=Path(__file__).resolve(),
@@ -1234,11 +1805,12 @@ def error_payload(
     exc: MoneyCraftError,
     operation: str | None = None,
     parameters: Mapping[str, Any] | None = None,
+    provider: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema": "money-craft.data-response.v1",
         "ok": False,
-        "provider": "fuyao" if operation else None,
+        "provider": provider if operation else None,
         "operation": operation,
         "request_id": exc.request_id,
         "fetched_at": utc_now(),
@@ -1296,7 +1868,8 @@ def main() -> int:
             else None
         )
         parameters = getattr(args, "sanitized_parameters", None) if args.command == "data" else None
-        print_json(error_payload(exc, operation, parameters))
+        provider = getattr(args, "resolved_provider", getattr(args, "provider", "fuyao")) if args.command == "data" else None
+        print_json(error_payload(exc, operation, parameters, provider))
         return exc.exit_code
     except OSError as exc:
         wrapped = MoneyCraftError("local_io_error", sanitize_message(exc), exit_code=EXIT_PROVIDER)
@@ -1306,9 +1879,24 @@ def main() -> int:
             else None
         )
         parameters = getattr(args, "sanitized_parameters", None) if args.command == "data" else None
-        print_json(error_payload(wrapped, operation, parameters))
+        provider = getattr(args, "resolved_provider", getattr(args, "provider", "fuyao")) if args.command == "data" else None
+        print_json(error_payload(wrapped, operation, parameters, provider))
         return wrapped.exit_code
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        runtime_paths.load_explicit_env_file()
+        maybe_reexec_data_runtime()
+        raise SystemExit(main())
+    except runtime_paths.RuntimePathError as exc:
+        print_json(
+            error_payload(
+                MoneyCraftError(
+                    "invalid_configuration",
+                    sanitize_message(exc),
+                    exit_code=EXIT_CONFIG,
+                )
+            )
+        )
+        raise SystemExit(EXIT_CONFIG)

@@ -39,6 +39,7 @@ def load_json(path: Path) -> Any:
 
 def owned_files() -> list[Path]:
     files = [
+        ROOT / ".env.example",
         ROOT / ".gitignore",
         ROOT / "LICENSE",
         ROOT / "README.md",
@@ -121,6 +122,7 @@ def validate() -> dict[str, Any]:
             for target in mapping["targets"]:
                 if not (ROOT / target).is_file():
                     errors.append(f"missing absorbed target: {target}")
+        previous_review_commit = upstream["reviewed_commit"]
         for review in upstream.get("reviews", []):
             if not isinstance(review, dict) or not all(
                 isinstance(review.get(key), str) and re.fullmatch(r"[0-9a-f]{40}", review[key])
@@ -128,10 +130,77 @@ def validate() -> dict[str, Any]:
             ):
                 errors.append("upstream review range must use fixed 40-character commits")
                 continue
-            if review.get("disposition") != "pin-retained-report-only":
+            if review["from_commit"] != previous_review_commit:
+                errors.append("upstream review ranges must be contiguous and ordered")
+            previous_review_commit = review["through_commit"]
+            disposition = review.get("disposition")
+            if disposition not in {
+                "pin-retained-report-only",
+                "pin-retained-selective-reimplementation",
+            }:
                 errors.append("unsupported upstream review disposition")
-            if review.get("changed_scope") != ["reports/"] or review.get("mapped_source_changes") != 0:
+            if disposition == "pin-retained-report-only" and (
+                review.get("changed_scope") != ["reports/"] or review.get("mapped_source_changes") != 0
+            ):
                 errors.append("report-only upstream review scope is inconsistent")
+            if disposition == "pin-retained-selective-reimplementation":
+                coverage = review.get("coverage")
+                if not isinstance(coverage, dict):
+                    errors.append("selective upstream review must record coverage")
+                else:
+                    counts = [
+                        coverage.get("changed_files"),
+                        coverage.get("reviewed_files"),
+                        coverage.get("accounted_excluded_files"),
+                        coverage.get("pending_files"),
+                    ]
+                    categories = coverage.get("categories")
+                    if any(not isinstance(value, int) or value < 0 for value in counts):
+                        errors.append("selective upstream review coverage counts must be non-negative integers")
+                    elif counts[0] != counts[1] + counts[2] + counts[3]:
+                        errors.append("selective upstream review coverage does not close")
+                    if (
+                        not isinstance(categories, dict)
+                        or set(categories) != set(review.get("changed_scope", []))
+                        or any(not isinstance(value, int) or value < 0 for value in categories.values())
+                        or sum(categories.values()) != coverage.get("changed_files")
+                    ):
+                        errors.append("selective upstream review category coverage is inconsistent")
+                    elif (
+                        categories.get("excluded-content", 0) != coverage.get("accounted_excluded_files")
+                        or sum(value for key, value in categories.items() if key != "excluded-content")
+                        != coverage.get("reviewed_files")
+                    ):
+                        errors.append("selective upstream review accounted and reviewed coverage is inconsistent")
+                    if coverage.get("pending_files") != 0:
+                        errors.append("selective upstream review has pending files")
+                decisions = review.get("non_absorbed_decisions")
+                if not isinstance(decisions, list) or not decisions:
+                    errors.append("selective upstream review must record non-absorbed decisions")
+                else:
+                    excluded_decision_files = 0
+                    for decision in decisions:
+                        sources = decision.get("sources") if isinstance(decision, dict) else None
+                        if (
+                            not isinstance(sources, list)
+                            or not sources
+                            or any(not isinstance(path, str) or path.startswith(("/", "../")) for path in sources)
+                            or decision.get("disposition")
+                            not in {"provenance-only", "content-excluded", "scope-rejected"}
+                            or not isinstance(decision.get("reason"), str)
+                            or not decision["reason"]
+                        ):
+                            errors.append("selective upstream non-absorbed decision is invalid")
+                        elif decision["disposition"] == "content-excluded":
+                            file_count = decision.get("file_count")
+                            if not isinstance(file_count, int) or file_count <= 0:
+                                errors.append("content-excluded upstream decision must record a positive file count")
+                            else:
+                                excluded_decision_files += file_count
+                    if isinstance(coverage, dict) and excluded_decision_files != coverage.get(
+                        "accounted_excluded_files"
+                    ):
+                        errors.append("content-excluded upstream decisions do not match coverage")
             observations = review.get("mechanism_observations")
             if not isinstance(observations, list) or not observations:
                 errors.append("upstream review must record mechanism observations")
@@ -143,10 +212,11 @@ def validate() -> dict[str, Any]:
                 if observation.get("classification") != "reimplemented":
                     errors.append("upstream report mechanisms must be reimplemented, not copied")
                 sources = observation.get("sources")
+                allowed_source_prefixes = ("reports/",) if disposition == "pin-retained-report-only" else ("reports/", "skills/")
                 if not isinstance(sources, list) or not sources or any(
-                    not isinstance(path, str) or not path.startswith("reports/") for path in sources
+                    not isinstance(path, str) or not path.startswith(allowed_source_prefixes) for path in sources
                 ):
-                    errors.append("upstream mechanism sources must remain under reports/")
+                    errors.append("upstream mechanism source is outside the reviewed source scope")
                 targets = observation.get("targets")
                 if not isinstance(targets, list) or not targets or any(not (ROOT / path).is_file() for path in targets):
                     errors.append("upstream mechanism observation target is missing")

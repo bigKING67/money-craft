@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 
 THSCODE_RE = re.compile(r"^\d{6}\.(?:SH|SZ|BJ)$")
+SECURITY_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]{1,15}:[A-Z0-9][A-Z0-9._-]{0,31}$")
+CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+THSCODE_MARKETS = {"SH": "CN-SH", "SZ": "CN-SZ", "BJ": "CN-BJ"}
 SOURCE_RE = re.compile(r"\[(S\d{2,4})\]")
 SOURCE_DEFINITION_RE = re.compile(r"^\s*-\s+\[(S\d{2,4})\]\s+(.+?)\s*$", re.MULTILINE)
 PLACEHOLDER_RE = re.compile(r"\{\{[^{}]+\}\}")
@@ -23,7 +26,7 @@ REQUIRED_HEADINGS = {
     "来源索引",
 }
 VALID_SCHEMAS = {"money-craft.report.v1", "money-craft.thesis.v1"}
-VALID_WORKFLOWS = {"screen", "research", "earnings", "thesis"}
+VALID_WORKFLOWS = {"screen", "research", "earnings", "thesis", "industry", "theme", "portfolio"}
 FINANCIAL_TERMS = re.compile(
     r"收入|利润|现金流|资产|负债|股本|ROE|毛利率|净利率|PE|PB|PS|PCF|估值|市值|股价",
     re.IGNORECASE,
@@ -72,6 +75,27 @@ def valid_iso_datetime(value: str) -> bool:
     return "T" in value and parsed.tzinfo is not None
 
 
+def security_id_from_metadata(metadata: dict[str, str]) -> str:
+    security_id = metadata.get("security_id", "").strip().upper()
+    thscode = metadata.get("thscode", "").strip().upper()
+    if security_id:
+        if not SECURITY_ID_RE.fullmatch(security_id):
+            raise ValueError("security_id must use Money Craft MARKET:SYMBOL syntax")
+    elif thscode:
+        if not THSCODE_RE.fullmatch(thscode):
+            raise ValueError("legacy thscode must be a six-digit Fuyao A-share code")
+        security_id = f"{THSCODE_MARKETS[thscode[-2:]]}:{thscode[:6]}"
+    else:
+        raise ValueError("security_id is required; legacy A-share documents may provide thscode")
+    if thscode:
+        if not THSCODE_RE.fullmatch(thscode):
+            raise ValueError("legacy thscode must be a six-digit Fuyao A-share code")
+        expected = f"{THSCODE_MARKETS[thscode[-2:]]}:{thscode[:6]}"
+        if security_id != expected:
+            raise ValueError("security_id and thscode identify different securities")
+    return security_id
+
+
 def extract_section(body: str, heading: str) -> str:
     pattern = re.compile(
         rf"^##\s+{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^##\s+|\Z)",
@@ -88,7 +112,6 @@ def audit_text(text: str) -> dict[str, Any]:
         "schema",
         "workflow",
         "security",
-        "thscode",
         "as_of",
         "data_cutoff",
         "base_currency",
@@ -99,16 +122,17 @@ def audit_text(text: str) -> dict[str, Any]:
     if metadata.get("schema") not in VALID_SCHEMAS:
         errors.append("schema must be money-craft.report.v1 or money-craft.thesis.v1")
     if metadata.get("workflow") not in VALID_WORKFLOWS:
-        errors.append("workflow must be screen, research, earnings, or thesis")
-    thscode = metadata.get("thscode", "")
-    if not THSCODE_RE.fullmatch(thscode):
-        errors.append("thscode must be a six-digit A-share code with SH, SZ, or BJ suffix")
+        errors.append("workflow must be screen, research, earnings, thesis, industry, theme, or portfolio")
+    try:
+        security_id_from_metadata(metadata)
+    except ValueError as exc:
+        errors.append(str(exc))
     if not valid_iso_date(metadata.get("as_of", "")):
         errors.append("as_of must be YYYY-MM-DD")
     if not valid_iso_datetime(metadata.get("data_cutoff", "")):
         errors.append("data_cutoff must be an ISO-8601 timestamp")
-    if metadata.get("base_currency") != "CNY":
-        errors.append("base_currency must be CNY in v0.2")
+    if not CURRENCY_RE.fullmatch(metadata.get("base_currency", "")):
+        errors.append("base_currency must be a three-letter uppercase currency code")
     headings = set(re.findall(r"^##\s+(.+?)\s*$", body, re.MULTILINE))
     for heading in sorted(REQUIRED_HEADINGS - headings):
         errors.append(f"missing required section: {heading}")

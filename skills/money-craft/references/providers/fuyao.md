@@ -11,11 +11,13 @@ MCP 工具列出具体文档链接；它不是完整字段规范。`llms-full.tx
 长文档，适合检索完整上下文。实现接口时仍以对应 endpoint 页面、当前错误码
 合同和真实响应为准，不能只按索引标题猜测参数或字段。
 
+截至 `sources.lock.json` 当前锁定版本，官方介绍的“跨市场”只出现在元信息描述；`/api/meta/tickers/search` 和 `/list` 的完整 `asset_type` 枚举实际只有 `a-share`、`a-share-index`、`fund-otc`、`fund-etf`、`fund-lof`，已上线行情与财务接口也都位于 `/api/a-share/*`。因此不能从“同花顺产品有全球数据”推断这套 Fuyao API 已开放港股或美股 endpoint；官方文档新增明确路径、参数和响应合同前，港美股必须走其他适配器或正式来源。
+
 索引还包含全市场导出、指数、基金、竞价、龙虎榜、热榜和其他特色数据。
-Money Craft v0.2 只开放下表中与证据优先基本面研究直接相关的有界能力；文档
+Money Craft v0.3 只把下表中与证据优先基本面研究直接相关的有界能力开放为 A 股适配器；文档
 里存在某个接口，不等于本客户端应自动暴露该接口。
 
-Money Craft v0.2 使用固定 HTTPS Base URL `https://fuyao.aicubes.cn`，通过请求头 `X-api-key` 鉴权。运行时优先读取环境变量 `FUYAO_API_KEY`，否则读取权限必须为 `0600` 或更严格的 `~/.config/money-craft/fuyao-api-key`。密钥文件必须由当前用户拥有、必须是普通文件且不能是符号链接。没有命令行 key 参数或可覆盖的生产 base URL。
+Money Craft v0.3 使用固定 HTTPS Base URL `https://fuyao.aicubes.cn`，通过请求头 `X-api-key` 鉴权。该 Provider 的覆盖范围不定义 Money Craft 的全球产品边界。运行时优先读取环境变量 `FUYAO_API_KEY`，否则读取权限必须为 `0600` 或更严格的 `~/.config/money-craft/fuyao-api-key`。密钥文件必须由当前用户拥有、必须是普通文件且不能是符号链接。没有命令行 key 参数或可覆盖的生产 base URL。
 
 ## 支持的 REST 能力
 

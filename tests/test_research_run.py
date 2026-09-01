@@ -227,6 +227,36 @@ def valid_reconciliation() -> dict[str, object]:
 
 
 class ResearchRunTests(unittest.TestCase):
+    def test_global_workspace_declares_unconfigured_yfinance_and_keeps_official_evidence_primary(self) -> None:
+        plan = company_research_plan(
+            security="NVIDIA Corporation",
+            security_id="US-NASDAQ:NVDA",
+            base_currency="USD",
+            as_of="2026-08-23",
+            latest_report="2026-2",
+            latest_report_end="2025-07-27",
+            latest_annual_report="2025-4",
+            provider={"mode": "auto", "configured": False, "network_checked": False},
+            today=dt.date(2026, 8, 23),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "run"
+            initialized = research_run.initialize_workspace(
+                workspace,
+                plan,
+                template_root=ROOT / "skills" / "money-craft" / "templates",
+            )
+            self.assertEqual(initialized["provider_operation_count"], 0)
+            case = json.loads((workspace / "case.json").read_text(encoding="utf-8"))
+            self.assertEqual(case["operations"], [])
+            report = (workspace / "report.md").read_text(encoding="utf-8")
+            self.assertIn("security_id: US-NASDAQ:NVDA", report)
+            self.assertIn("base_currency: USD", report)
+            status = research_run.research_status(workspace)
+            self.assertEqual(status["stages"]["provider_evidence"], "not_applicable")
+            self.assertEqual(status["provider_gaps"], ["provider:yfinance:not-configured"])
+            self.assertEqual(status["missing_sources"], ["S11", "S12", "S13"])
+
     def initialize(self, directory: str, *, provider_mode: str = "auto") -> Path:
         workspace = Path(directory) / "run"
         result = research_run.initialize_workspace(

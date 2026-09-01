@@ -14,7 +14,7 @@ UPSTREAM = ROOT / "upstreams" / "ai-berkshire"
 LOCK_PATH = ROOT / "sources.lock.json"
 
 
-def git(*args: str, check: bool = True) -> str:
+def git(*args: str, check: bool = True, strip: bool = True) -> str:
     completed = subprocess.run(
         ["git", *args],
         cwd=UPSTREAM,
@@ -24,17 +24,32 @@ def git(*args: str, check: bool = True) -> str:
     )
     if check and completed.returncode != 0:
         raise ValueError(completed.stderr.strip() or completed.stdout.strip())
-    return completed.stdout.strip()
+    return completed.stdout.strip() if strip else completed.stdout
+
+
+def changed_paths(from_commit: str, through_commit: str) -> list[str]:
+    if from_commit == through_commit:
+        return []
+    raw = git(
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        "-z",
+        f"{from_commit}..{through_commit}",
+        strip=False,
+    )
+    return [path for path in raw.split("\0") if path]
 
 
 def category(path: str) -> str:
-    if path.startswith("skills/") or path.startswith("codex-skills/"):
+    if path.startswith(("skills/", "codex-skills/", "codex-prompts/")):
         return "skills"
     if path.startswith("tools/") or path.startswith("scripts/"):
         return "tools"
     if path.startswith("tests/"):
         return "tests"
-    if path.startswith("reports/") or path.startswith("data/") or path.startswith("assets/"):
+    if path.startswith(("reports/", "data/", "assets/", "实盘记录/")):
         return "excluded-content"
     if path.endswith(".md"):
         return "documentation"
@@ -53,9 +68,7 @@ def build_status(fetch: bool) -> dict[str, Any]:
     reviewed = entry["reviewed_commit"]
     reviews = entry.get("reviews", [])
     review_baseline = reviews[-1]["through_commit"] if reviews else reviewed
-    changed_files = (
-        [] if remote == review_baseline else git("diff", "--name-only", f"{review_baseline}..{remote}").splitlines()
-    )
+    changed_files = changed_paths(review_baseline, remote)
     categories: dict[str, int] = {}
     for path in changed_files:
         key = category(path)

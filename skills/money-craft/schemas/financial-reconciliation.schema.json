@@ -6,7 +6,6 @@
   "required": [
     "schema",
     "security",
-    "thscode",
     "as_of",
     "base_currency",
     "required_checks",
@@ -20,9 +19,10 @@
   "properties": {
     "schema": {"const": "money-craft.financial-reconciliation.v1"},
     "security": {"type": "string", "minLength": 1, "maxLength": 128},
+    "security_id": {"type": "string", "pattern": "^[A-Z0-9][A-Z0-9-]{1,15}:[A-Z0-9][A-Z0-9._-]{0,31}$"},
     "thscode": {"type": "string", "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"},
     "as_of": {"type": "string", "format": "date"},
-    "base_currency": {"const": "CNY"},
+    "base_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
     "required_checks": {
       "type": "array",
       "minItems": 2,
@@ -51,6 +51,10 @@
     "presentation_to_economics": {"$ref": "#/$defs/assessment"},
     "subsequent_events": {"$ref": "#/$defs/assessment"}
   },
+  "anyOf": [
+    {"required": ["security_id"]},
+    {"required": ["thscode"]}
+  ],
   "$defs": {
     "sourceIds": {
       "type": "array",

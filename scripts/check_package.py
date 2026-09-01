@@ -14,6 +14,7 @@ MAX_COMPRESSED_BYTES = 1 * 1024 * 1024
 MAX_UNPACKED_BYTES = 2 * 1024 * 1024
 MAX_FILES = 100
 ALLOWED_PREFIXES = (
+    ".env.example",
     ".codex-plugin/",
     ".claude-plugin/",
     ".grok-plugin/",

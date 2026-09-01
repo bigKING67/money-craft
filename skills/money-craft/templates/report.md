@@ -2,14 +2,14 @@
 schema: money-craft.report.v1
 workflow: {{screen_or_research_or_earnings}}
 security: {{security_name}}
-thscode: {{six_digit_code.exchange}}
+security_id: {{market_symbol}}
 as_of: {{YYYY-MM-DD}}
 data_cutoff: {{ISO-8601}}
-base_currency: CNY
-provider_status: {{configured_or_unavailable}}
+base_currency: {{base_currency}}
+provider_status: {{provider_availability}}
 ---
 
-# {{security_name}} 基本面研究
+# {{security_name}} 全球基本面研究
 
 ## 结论
 

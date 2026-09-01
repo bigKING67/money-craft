@@ -70,6 +70,32 @@ provider_status: unavailable
 
 
 class TrackingWorkflowTests(unittest.TestCase):
+    def test_global_thesis_initializes_tracking_with_security_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            previous = base / "previous-global.md"
+            text = thesis_text(
+                as_of="2026-08-23",
+                cutoff="2026-08-23T12:00:00+08:00",
+                hypothesis_state="UNVERIFIED",
+                update_rows=[INITIAL_UPDATE],
+            )
+            text = text.replace("security: Test Company", "security: NVIDIA Corporation")
+            text = text.replace("thscode: 600519.SH", "security_id: US-NASDAQ:NVDA")
+            text = text.replace("base_currency: CNY", "base_currency: USD")
+            previous.write_text(text, encoding="utf-8")
+            initialized = tracking.initialize_tracking(
+                base / "tracking",
+                as_of="2026-11-01",
+                previous=previous,
+                template_root=TEMPLATE_ROOT,
+            )
+            workspace = Path(initialized["workspace"])
+            state = json.loads((workspace / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["security_id"], "US-NASDAQ:NVDA")
+            self.assertEqual(state["base_currency"], "USD")
+            self.assertIn("US-NASDAQ:NVDA", (workspace / "card.md").read_text(encoding="utf-8"))
+
     def create_previous(self, root: Path) -> Path:
         previous = root / "previous.md"
         previous.write_text(

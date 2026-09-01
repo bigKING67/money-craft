@@ -14,6 +14,10 @@ import financial_rigor
 import report_audit
 
 THSCODE_RE = re.compile(r"^\d{6}\.(?:SH|SZ|BJ)$")
+SECURITY_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]{1,15}:[A-Z0-9][A-Z0-9._-]{0,31}$")
+CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+THSCODE_MARKETS = {"SH": "CN-SH", "SZ": "CN-SZ", "BJ": "CN-BJ"}
+MARKET_EXCHANGES = {"CN-SH": "SSE", "CN-SZ": "SZSE", "CN-BJ": "BSE"}
 REPORT_RE = re.compile(r"^((?:19|20)\d{2})-([1-4])$")
 HYPOTHESIS_ID_RE = re.compile(r"^H\d{2,4}$")
 RED_LINE_ID_RE = re.compile(r"^R\d{2,4}$")
@@ -64,38 +68,206 @@ def shift_years(value: dt.date, years: int) -> dt.date:
         return value.replace(year=value.year + years, day=28)
 
 
+def security_id_from_thscode(thscode: str) -> str:
+    code = thscode.strip().upper()
+    if not THSCODE_RE.fullmatch(code):
+        raise WorkflowError("invalid_identity", "thscode must be a complete Fuyao A-share code")
+    return f"{THSCODE_MARKETS[code[-2:]]}:{code[:6]}"
+
+
+def thscode_from_security_id(security_id: str) -> str | None:
+    normalized = security_id.strip().upper()
+    if not SECURITY_ID_RE.fullmatch(normalized):
+        raise WorkflowError(
+            "invalid_identity",
+            "security_id must use Money Craft MARKET:SYMBOL syntax, for example HK:00700 or US-NASDAQ:NVDA",
+        )
+    market, ticker = normalized.split(":", 1)
+    suffixes = {value: key for key, value in THSCODE_MARKETS.items()}
+    suffix = suffixes.get(market)
+    if suffix is None:
+        return None
+    if not re.fullmatch(r"\d{6}", ticker):
+        raise WorkflowError("invalid_identity", f"{market} security_id must use a six-digit symbol")
+    return f"{ticker}.{suffix}"
+
+
+def yfinance_symbol_from_security_id(security_id: str) -> str | None:
+    normalized = security_id.strip().upper()
+    if not SECURITY_ID_RE.fullmatch(normalized):
+        raise WorkflowError(
+            "invalid_identity",
+            "security_id must use Money Craft MARKET:SYMBOL syntax, for example HK:00700 or US-NASDAQ:NVDA",
+        )
+    market, ticker = normalized.split(":", 1)
+    if market == "HK":
+        if not ticker.isdigit() or len(ticker) > 5:
+            raise WorkflowError("invalid_identity", "HK security_id must use a numeric symbol of at most five digits")
+        return f"{ticker.lstrip('0').zfill(4)}.HK"
+    if market == "US" or market.startswith("US-"):
+        return ticker.replace(".", "-")
+    return None
+
+
+def normalize_security_identity(
+    *,
+    security: str,
+    security_id: str | None,
+    thscode: str | None,
+    base_currency: str | None,
+) -> dict[str, Any]:
+    name = security.strip()
+    if not name or len(name) > 128:
+        raise WorkflowError("invalid_identity", "security must be a non-empty name of at most 128 characters")
+
+    normalized_thscode = thscode.strip().upper() if isinstance(thscode, str) and thscode.strip() else None
+    if normalized_thscode is not None and not THSCODE_RE.fullmatch(normalized_thscode):
+        raise WorkflowError("invalid_identity", "thscode must be a complete Fuyao A-share code")
+    normalized_security_id = (
+        security_id.strip().upper() if isinstance(security_id, str) and security_id.strip() else None
+    )
+    if normalized_security_id is None and normalized_thscode is None:
+        raise WorkflowError("invalid_identity", "security_id is required unless legacy --thscode is provided")
+    if normalized_security_id is None:
+        normalized_security_id = security_id_from_thscode(str(normalized_thscode))
+    if not SECURITY_ID_RE.fullmatch(normalized_security_id):
+        raise WorkflowError(
+            "invalid_identity",
+            "security_id must use Money Craft MARKET:SYMBOL syntax, for example HK:00700 or US-NASDAQ:NVDA",
+        )
+    derived_thscode = thscode_from_security_id(normalized_security_id)
+    if normalized_thscode is not None and derived_thscode != normalized_thscode:
+        raise WorkflowError("identity_mismatch", "security_id and thscode identify different securities")
+    if normalized_thscode is None:
+        normalized_thscode = derived_thscode
+
+    market, ticker = normalized_security_id.split(":", 1)
+    currency = base_currency.strip().upper() if isinstance(base_currency, str) else ""
+    if not currency:
+        if normalized_thscode is None:
+            raise WorkflowError("invalid_currency", "base_currency is required outside the Fuyao A-share adapter")
+        currency = "CNY"
+    if not CURRENCY_RE.fullmatch(currency):
+        raise WorkflowError("invalid_currency", "base_currency must be a three-letter uppercase currency code")
+
+    identity: dict[str, Any] = {
+        "security": name,
+        "security_id": normalized_security_id,
+        "market": market,
+        "ticker": ticker,
+        "instrument_type": "listed-equity",
+        "base_currency": currency,
+        "provider_identifiers": {},
+    }
+    if normalized_thscode is not None:
+        identity.update(
+            {
+                "thscode": normalized_thscode,
+                "exchange": MARKET_EXCHANGES[market],
+                "share_class": "A-share",
+                "provider_identifiers": {"fuyao": normalized_thscode},
+            }
+        )
+    else:
+        yfinance_symbol = yfinance_symbol_from_security_id(normalized_security_id)
+        if yfinance_symbol is not None:
+            identity["provider_identifiers"] = {"yfinance": yfinance_symbol}
+            if market == "HK":
+                identity.update({"exchange": "HKEX", "share_class": "ordinary-share"})
+            else:
+                exchange = market.removeprefix("US-") if market.startswith("US-") else "US"
+                identity.update({"exchange": exchange, "share_class": "common-stock"})
+    return identity
+
+
 def company_research_plan(
     *,
     security: str,
-    thscode: str,
     as_of: str,
     latest_report: str,
     provider: dict[str, Any],
+    security_id: str | None = None,
+    thscode: str | None = None,
+    base_currency: str | None = None,
+    latest_report_end: str | None = None,
+    latest_annual_report: str | None = None,
     today: dt.date | None = None,
 ) -> dict[str, Any]:
-    name = security.strip()
-    code = thscode.strip().upper()
-    if not name or len(name) > 128:
-        raise WorkflowError("invalid_identity", "security must be a non-empty name of at most 128 characters")
-    if not THSCODE_RE.fullmatch(code):
-        raise WorkflowError("invalid_identity", "thscode must be a complete A-share code")
+    identity = normalize_security_identity(
+        security=security,
+        security_id=security_id,
+        thscode=thscode,
+        base_currency=base_currency,
+    )
+    code = identity.get("thscode")
     research_date = parse_date(as_of, "as_of")
     current_date = today or dt.datetime.now(SHANGHAI).date()
     if research_date > current_date:
         raise WorkflowError("future_as_of", "as_of cannot be later than the current Asia/Shanghai date")
     report_year, report_quarter = parse_report_period(latest_report)
-    if report_period_end(report_year, report_quarter) > research_date:
+    if latest_report_end is None:
+        if code is None:
+            raise WorkflowError(
+                "missing_report_end",
+                "latest_report_end is required outside A-share calendar-quarter reporting",
+            )
+        effective_report_end = report_period_end(report_year, report_quarter)
+    else:
+        effective_report_end = parse_date(latest_report_end, "latest_report_end")
+    if effective_report_end > research_date:
         raise WorkflowError("future_report_period", "latest report period ends after as_of")
-    annual_report = latest_report if report_quarter == 4 else f"{report_year - 1}-4"
+    if latest_annual_report is None:
+        if code is None and report_quarter != 4:
+            raise WorkflowError(
+                "missing_annual_period",
+                "latest_annual_report is required for non-A-share interim research",
+            )
+        annual_report = latest_report if report_quarter == 4 else f"{report_year - 1}-4"
+    else:
+        parse_report_period(latest_annual_report)
+        if not latest_annual_report.endswith("-4"):
+            raise WorkflowError("invalid_report_period", "latest_annual_report must identify an annual YYYY-4 period")
+        annual_report = latest_annual_report
     history_start = shift_years(research_date, -5).isoformat()
     month_start = research_date.replace(day=1).isoformat()
-    exchange = {"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}[code[-2:]]
     comparison_period = f"{report_year - 1}-{report_quarter}"
     reconciliation_checks = ["balance-sheet-equation", "cash-balance-tie"]
     if report_quarter > 1:
         reconciliation_checks.append("quarter-from-ytd")
 
-    operations = [
+    provider = dict(provider)
+    adapter = provider.get("adapter") or ("fuyao" if isinstance(code, str) else "yfinance")
+    if adapter not in {"fuyao", "yfinance"}:
+        raise WorkflowError("invalid_provider", "provider adapter must be fuyao or yfinance")
+    provider_identifier = identity["provider_identifiers"].get(adapter)
+    security_supported = isinstance(provider_identifier, str)
+    provider.update(
+        {
+            "adapter": adapter,
+            "adapter_scope": (
+                "A-share structured data"
+                if adapter == "fuyao"
+                else "Hong Kong and U.S. secondary market data via Yahoo Finance"
+            ),
+            "security_supported": security_supported,
+        }
+    )
+    mode = provider.get("mode")
+    if mode not in {"auto", "required", "disabled"}:
+        raise WorkflowError("invalid_provider_mode", "provider mode must be auto, required, or disabled")
+    if mode == "required" and not security_supported:
+        raise WorkflowError("provider_unsupported", f"{adapter} required mode does not support this security_id")
+    provider_available = security_supported and mode != "disabled" and provider.get("configured") is True
+    if provider_available:
+        provider["availability"] = "available"
+    elif mode == "disabled":
+        provider["availability"] = "disabled"
+    elif not security_supported:
+        provider["availability"] = "unsupported-security"
+    else:
+        provider["availability"] = "not-configured"
+
+    fuyao_operations = [
         {"id": "S01", "operation": "search", "arguments": {"query": code[:6], "limit": 3}},
         {"id": "S02", "operation": "snapshot", "arguments": {"thscodes": code}},
         {"id": "S03", "operation": "valuations", "arguments": {"thscodes": code}},
@@ -147,25 +319,100 @@ def company_research_plan(
             "operation": "financials",
             "arguments": {"thscode": code, "statement": "cash-flow", "period": "quarterly", "limit": 8},
         },
-    ]
-    if latest_report != annual_report:
-        operations.append(
+    ] if isinstance(code, str) else []
+    if isinstance(code, str) and latest_report != annual_report:
+        fuyao_operations.append(
             {"id": "S17", "operation": "indicators", "arguments": {"thscode": code, "report": latest_report}}
         )
+
+    yfinance_operations = [
+        {
+            "id": "S01",
+            "provider": "yfinance",
+            "operation": "search",
+            "arguments": {"query": provider_identifier, "limit": 5},
+        },
+        {
+            "id": "S02",
+            "provider": "yfinance",
+            "operation": "snapshot",
+            "arguments": {"symbol": provider_identifier},
+        },
+        {
+            "id": "S03",
+            "provider": "yfinance",
+            "operation": "valuations",
+            "arguments": {"symbol": provider_identifier},
+        },
+        {
+            "id": "S04",
+            "provider": "yfinance",
+            "operation": "history",
+            "arguments": {
+                "symbol": provider_identifier,
+                "start": history_start,
+                "end": as_of,
+                "interval": "1d",
+                "adjust": "auto",
+            },
+        },
+        {
+            "id": "S05",
+            "provider": "yfinance",
+            "operation": "financials",
+            "arguments": {"symbol": provider_identifier, "statement": "income", "period": "annual", "limit": 5},
+        },
+        {
+            "id": "S06",
+            "provider": "yfinance",
+            "operation": "financials",
+            "arguments": {"symbol": provider_identifier, "statement": "balance", "period": "annual", "limit": 5},
+        },
+        {
+            "id": "S07",
+            "provider": "yfinance",
+            "operation": "financials",
+            "arguments": {"symbol": provider_identifier, "statement": "cash-flow", "period": "annual", "limit": 5},
+        },
+        {
+            "id": "S09",
+            "provider": "yfinance",
+            "operation": "corporate-actions",
+            "arguments": {"symbol": provider_identifier, "start": history_start, "end": as_of},
+        },
+        {
+            "id": "S14",
+            "provider": "yfinance",
+            "operation": "financials",
+            "arguments": {"symbol": provider_identifier, "statement": "income", "period": "quarterly", "limit": 8},
+        },
+        {
+            "id": "S15",
+            "provider": "yfinance",
+            "operation": "financials",
+            "arguments": {"symbol": provider_identifier, "statement": "balance", "period": "quarterly", "limit": 8},
+        },
+        {
+            "id": "S16",
+            "provider": "yfinance",
+            "operation": "financials",
+            "arguments": {"symbol": provider_identifier, "statement": "cash-flow", "period": "quarterly", "limit": 8},
+        },
+    ]
+    if provider_available:
+        operations = fuyao_operations if adapter == "fuyao" else yfinance_operations
+        for item in operations:
+            item.setdefault("provider", adapter)
+    else:
+        operations = []
 
     return {
         "schema": "money-craft.company-research-plan.v1",
         "mode": "research",
-        "identity": {
-            "security": name,
-            "thscode": code,
-            "ticker": code[:6],
-            "exchange": exchange,
-            "share_class": "A-share",
-            "base_currency": "CNY",
-        },
+        "identity": identity,
         "as_of": as_of,
         "latest_report_period": latest_report,
+        "latest_report_end": effective_report_end.isoformat(),
         "latest_annual_period": annual_report,
         "provider": provider,
         "execution_boundary": {
@@ -175,7 +422,7 @@ def company_research_plan(
             "automatic_trading": False,
         },
         "stages": [
-            {"id": "identity", "gate": "exact name and thscode reconciliation"},
+            {"id": "identity", "gate": "exact security_id, name, market, and currency reconciliation"},
             {"id": "official-evidence", "gate": "latest and annual formal filings acquired"},
             {"id": "provider-cross-check", "gate": "bounded operations captured or gaps declared"},
             {"id": "research", "gate": "facts separated from inference and counterevidence retained"},
@@ -356,6 +603,11 @@ def load_thesis(path: Path) -> dict[str, Any]:
     metadata, body, frontmatter_errors = report_audit.parse_frontmatter(text)
     if frontmatter_errors or metadata.get("schema") != "money-craft.thesis.v1" or metadata.get("workflow") != "thesis":
         raise WorkflowError("invalid_thesis", "document must use money-craft.thesis.v1 with workflow thesis")
+    try:
+        canonical_security_id = report_audit.security_id_from_metadata(metadata)
+    except ValueError as exc:
+        raise WorkflowError("invalid_thesis", str(exc)) from exc
+    metadata = {**metadata, "security_id": canonical_security_id}
 
     hypotheses = parse_table(
         report_audit.extract_section(body, "核心假设"), HYPOTHESIS_COLUMNS, "核心假设"
@@ -423,7 +675,7 @@ def prepare_thesis_update(previous: Path, *, as_of: str) -> dict[str, Any]:
         "schema": "money-craft.thesis-update-plan.v1",
         "identity": {
             "security": snapshot["metadata"]["security"],
-            "thscode": snapshot["metadata"]["thscode"],
+            "security_id": snapshot["metadata"]["security_id"],
             "base_currency": snapshot["metadata"]["base_currency"],
         },
         "previous": {
@@ -495,7 +747,7 @@ def record_diff(
 def thesis_diff(previous: Path, current: Path) -> dict[str, Any]:
     old = load_thesis(previous)
     new = load_thesis(current)
-    identity_fields = ("security", "thscode", "base_currency")
+    identity_fields = ("security", "security_id", "base_currency")
     for field in identity_fields:
         if old["metadata"].get(field) != new["metadata"].get(field):
             raise WorkflowError("identity_mismatch", f"thesis identity changed: {field}")

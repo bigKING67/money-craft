@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import install_skill  # noqa: E402
+import upstream_status  # noqa: E402
 import verify_evidence  # noqa: E402
 
 
@@ -81,6 +82,33 @@ class RepositoryContractTests(unittest.TestCase):
             for target in mapping["targets"]:
                 self.assertTrue((ROOT / target).is_file())
 
+    def test_selective_upstream_review_closes_coverage(self) -> None:
+        lock = json.loads((ROOT / "sources.lock.json").read_text(encoding="utf-8"))
+        review = lock["upstreams"][0]["reviews"][-1]
+        self.assertEqual(review["disposition"], "pin-retained-selective-reimplementation")
+        coverage = review["coverage"]
+        self.assertEqual(coverage["pending_files"], 0)
+        self.assertEqual(
+            coverage["changed_files"],
+            coverage["reviewed_files"] + coverage["accounted_excluded_files"],
+        )
+        self.assertEqual(
+            sum(coverage["categories"].values()),
+            coverage["changed_files"],
+        )
+        skill = (ROOT / "skills/money-craft/SKILL.md").read_text(encoding="utf-8")
+        routing = (ROOT / "skills/money-craft/references/routing.md").read_text(encoding="utf-8")
+        self.assertIn("references/high-growth-alpha.md", skill)
+        self.assertIn("`research + thesis + alpha`", routing)
+        self.assertIn("`industry/theme + alpha`", routing)
+        self.assertIn("security_id", routing)
+
+    def test_upstream_categories_preserve_unicode_paths(self) -> None:
+        self.assertEqual(upstream_status.category("reports/快手/赔率表.md"), "excluded-content")
+        self.assertEqual(upstream_status.category("实盘记录/卖出条件.md"), "excluded-content")
+        self.assertEqual(upstream_status.category("skills/era-alpha.md"), "skills")
+        self.assertEqual(upstream_status.category("codex-prompts/era-alpha.md"), "skills")
+
     def test_workflow_actions_are_pinned_to_reviewed_node24_releases(self) -> None:
         seen: set[str] = set()
         pattern = re.compile(r"uses:\s+([^@\s]+)@([0-9a-f]{40})\s+#\s+(v[0-9]+\.[0-9]+\.[0-9]+)")
@@ -104,6 +132,63 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertIn("python3 -m unittest tests.test_report_renderer -v", workflow)
         self.assertIn("python3 scripts/report_smoke.py", workflow)
+
+    def test_runtime_paths_are_xdg_split_and_dotenv_is_explicit_only(self) -> None:
+        runtime = (ROOT / "skills" / "money-craft" / "scripts" / "runtime_paths.py").read_text(
+            encoding="utf-8"
+        )
+        example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        self.assertIn('CONFIG_HOME_ENV = "MONEY_CRAFT_CONFIG_HOME"', runtime)
+        self.assertIn('DATA_HOME_ENV = "MONEY_CRAFT_DATA_HOME"', runtime)
+        self.assertIn('CACHE_HOME_ENV = "MONEY_CRAFT_CACHE_HOME"', runtime)
+        self.assertIn('ENV_FILE_ENV = "MONEY_CRAFT_ENV_FILE"', runtime)
+        self.assertNotIn("Path.cwd()", runtime)
+        self.assertIn("MONEY_CRAFT_ENV_FILE", example)
+        self.assertIn("FRED_API_KEY=", example)
+        self.assertIn(".env.*", gitignore)
+        self.assertIn("!.env.example", gitignore)
+        self.assertIn(".env.example", package["files"])
+
+    def test_yfinance_is_optional_pinned_and_documented_without_redefining_primary_evidence(self) -> None:
+        requirements = (ROOT / "skills/money-craft/requirements-yfinance.txt").read_text(encoding="utf-8")
+        self.assertEqual(requirements.strip(), "yfinance==1.7.0")
+        lock = json.loads((ROOT / "sources.lock.json").read_text(encoding="utf-8"))
+        release = next(item for item in lock["documents"] if item["id"] == "yfinance-pypi-1.7.0")
+        self.assertEqual(release["version"], "1.7.0")
+        self.assertEqual(
+            release["wheel_sha256"],
+            "91281ecd1f71069a37155ff8653aff2d3085f3492bd8721f18b70955da62911a",
+        )
+        skill = (ROOT / "skills/money-craft/SKILL.md").read_text(encoding="utf-8")
+        provider = (ROOT / "skills/money-craft/references/providers/yfinance.md").read_text(encoding="utf-8")
+        self.assertIn("references/providers/yfinance.md", skill)
+        self.assertIn("正式披露", provider)
+        self.assertIn("personal use", provider)
+
+    def test_fred_is_documented_as_macro_vintage_data_with_rights_and_secret_boundaries(self) -> None:
+        lock = json.loads((ROOT / "sources.lock.json").read_text(encoding="utf-8"))
+        ids = {item["id"] for item in lock["documents"]}
+        self.assertTrue(
+            {
+                "fred-api-key-reference",
+                "fred-series-search-reference",
+                "fred-series-reference",
+                "fred-series-observations-reference",
+                "fred-series-vintagedates-reference",
+                "fred-realtime-period-reference",
+                "fred-api-terms",
+            }.issubset(ids)
+        )
+        skill = (ROOT / "skills/money-craft/SKILL.md").read_text(encoding="utf-8")
+        provider = (ROOT / "skills/money-craft/references/providers/fred.md").read_text(encoding="utf-8")
+        notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        self.assertIn("references/providers/fred.md", skill)
+        self.assertIn("as-known-on", provider)
+        self.assertIn("FRED_API_KEY", provider)
+        self.assertIn("not endorsed or certified", notices)
+        self.assertNotRegex(provider, r"(?<![A-Za-z0-9])[a-z0-9]{32}(?![A-Za-z0-9])")
 
     def test_atomic_installer_and_force_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

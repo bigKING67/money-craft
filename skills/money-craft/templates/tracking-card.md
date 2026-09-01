@@ -1,4 +1,4 @@
-# {{SECURITY}}（{{THSCODE}}）论文跟踪卡
+# {{SECURITY}}（{{SECURITY_ID}}）论文跟踪卡
 
 - 跟踪日期：{{AS_OF}}
 - 当前结论：{{CURRENT_CONCLUSION}}

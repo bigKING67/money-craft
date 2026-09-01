@@ -276,7 +276,7 @@ def initial_state(thesis: dict[str, Any], *, as_of: str, source_research: dict[s
     state: dict[str, Any] = {
         "schema": "money-craft.tracking-state.v1",
         "security": thesis["metadata"]["security"],
-        "thscode": thesis["metadata"]["thscode"],
+        "security_id": thesis["metadata"]["security_id"],
         "as_of": as_of,
         "data_cutoff": thesis["metadata"]["data_cutoff"],
         "base_currency": thesis["metadata"]["base_currency"],
@@ -305,7 +305,7 @@ def validate_state(state: dict[str, Any], thesis: dict[str, Any], *, final_revis
     if state.get("schema") != "money-craft.tracking-state.v1":
         raise TrackingError("invalid_tracking_state", "state.json has an unsupported schema")
     metadata = thesis["metadata"]
-    for key in ("security", "thscode", "as_of", "data_cutoff", "base_currency"):
+    for key in ("security", "security_id", "as_of", "data_cutoff", "base_currency"):
         if state.get(key) != metadata.get(key):
             raise TrackingError("tracking_state_mismatch", f"state.json does not match thesis field: {key}")
     revision = state.get("tracking_revision")
@@ -337,7 +337,7 @@ def validate_state(state: dict[str, Any], thesis: dict[str, Any], *, final_revis
 def render_card(template: str, thesis: dict[str, Any], as_of: str) -> str:
     replacements = {
         "{{SECURITY}}": thesis["metadata"]["security"],
-        "{{THSCODE}}": thesis["metadata"]["thscode"],
+        "{{SECURITY_ID}}": thesis["metadata"]["security_id"],
         "{{AS_OF}}": as_of,
     }
     for marker, value in replacements.items():
@@ -541,7 +541,7 @@ def make_tracking_manifest(
     manifest: dict[str, Any] = {
         "schema": "money-craft.tracking-revision.v1",
         "security": thesis["metadata"]["security"],
-        "thscode": thesis["metadata"]["thscode"],
+        "security_id": thesis["metadata"]["security_id"],
         "tracking_revision": revision,
         "as_of": thesis["metadata"]["as_of"],
         "data_cutoff": thesis["metadata"]["data_cutoff"],
@@ -648,7 +648,7 @@ def finalize_tracking(workspace: Path) -> dict[str, Any]:
             current = {
                 "schema": "money-craft.tracking-current.v1",
                 "security": thesis["metadata"]["security"],
-                "thscode": thesis["metadata"]["thscode"],
+                "security_id": thesis["metadata"]["security_id"],
                 "tracking_revision": revision,
                 "path": f"revisions/{revision}",
                 "as_of": thesis["metadata"]["as_of"],
@@ -766,12 +766,12 @@ def verify_revision(path: Path, *, require_read_only: bool) -> dict[str, Any]:
         if diff.get("previous", {}).get("sha256") != plan.get("previous", {}).get("sha256"):
             errors.append("diff previous thesis does not match update plan")
         if thesis is not None:
-            identity = {key: thesis["metadata"][key] for key in ("security", "thscode", "base_currency")}
+            identity = {key: thesis["metadata"][key] for key in ("security", "security_id", "base_currency")}
             if diff.get("identity") != identity:
                 errors.append("diff identity does not match thesis")
             if diff.get("current", {}).get("sha256") != thesis["sha256"]:
                 errors.append("diff current thesis hash does not match thesis")
-            for key in ("security", "thscode", "as_of", "data_cutoff"):
+            for key in ("security", "security_id", "as_of", "data_cutoff"):
                 if manifest.get(key) != thesis["metadata"].get(key):
                     errors.append(f"manifest does not match thesis field: {key}")
             result = manifest.get("result", {})
@@ -824,7 +824,7 @@ def verify_tracking(tracking_root: Path, *, require_read_only: bool = True) -> d
                 if current.get(key) != value:
                     errors.append(f"current.json hash mismatch: {key}")
             manifest = read_json(current_revision / "TRACKING.json", "current tracking manifest")
-            for key in ("security", "thscode", "as_of", "data_cutoff"):
+            for key in ("security", "security_id", "as_of", "data_cutoff"):
                 if current.get(key) != manifest.get(key):
                     errors.append(f"current.json does not match manifest field: {key}")
             if current.get("health_score") != manifest.get("result", {}).get("health_score"):

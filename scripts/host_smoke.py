@@ -305,7 +305,7 @@ def run_host_discovery(
     )
     record_discovery(
         host="codex",
-        command=["codex", "debug", "prompt-input", "Use $money-craft for A-share research."],
+        command=["codex", "debug", "prompt-input", "Use $money-craft for global investment research."],
         parser=parse_codex_discovery,
         check_name="codex-live-skill-discovery",
         method="model-visible prompt catalog",

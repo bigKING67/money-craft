@@ -1,7 +1,7 @@
 {
   "name": "money-craft",
-  "version": "0.2.1",
-  "description": "Evidence-first A-share fundamental research and thesis discipline.",
+  "version": "0.3.0",
+  "description": "Evidence-first global investment research and wealth decision discipline.",
   "author": {
     "name": "bigKING67"
   },
@@ -10,7 +10,8 @@
   "license": "MIT",
   "keywords": [
     "investment-research",
-    "a-share",
+    "global-investing",
+    "portfolio-analysis",
     "agent-skill"
   ]
 }

@@ -33,7 +33,10 @@ STATUS_SCHEMA = "money-craft.research-status.v1"
 FINALIZE_SCHEMA = "money-craft.research-finalize.v1"
 RECEIPT_SCHEMA = "money-craft.research-completion-receipt.v1"
 MANIFEST_SCHEMA = "money-craft.public-evidence-manifest.v1"
-PROVIDER_DOCUMENTATION = "https://fuyao.aicubes.cn/docs/api-reference/overview/"
+PROVIDER_DOCUMENTATION = {
+    "fuyao": "https://fuyao.aicubes.cn/docs/api-reference/overview/",
+    "yfinance": "https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.html",
+}
 SOURCE_ID_RE = re.compile(r"^S\d{2,4}$")
 SECRET_RE = re.compile(rb"sk-fuyao-[A-Za-z0-9_-]{12,}")
 MAX_JSON_BYTES = 32 * 1024 * 1024
@@ -69,6 +72,13 @@ class ResearchRunError(RuntimeError):
         super().__init__(message)
         self.kind = kind
         self.exit_code = exit_code
+
+
+def provider_documentation(adapter: str) -> str:
+    try:
+        return PROVIDER_DOCUMENTATION[adapter]
+    except KeyError as exc:
+        raise ResearchRunError("invalid_plan", f"unsupported provider adapter: {adapter}") from exc
 
 
 def utc_now() -> str:
@@ -179,10 +189,10 @@ def company_directory_name(plan: dict[str, Any]) -> str:
     identity = plan.get("identity")
     if not isinstance(identity, dict):
         raise ResearchRunError("invalid_plan", "plan identity is required for the research output path")
-    thscode = identity.get("thscode")
+    security_id = identity.get("security_id")
     security = identity.get("security")
-    if not isinstance(thscode, str) or not re.fullmatch(r"\d{6}\.(?:SH|SZ|BJ)", thscode):
-        raise ResearchRunError("invalid_plan", "plan thscode is invalid for the research output path")
+    if not isinstance(security_id, str) or not research_workflow.SECURITY_ID_RE.fullmatch(security_id):
+        raise ResearchRunError("invalid_plan", "plan security_id is invalid for the research output path")
     if not isinstance(security, str) or not security.strip():
         raise ResearchRunError("invalid_plan", "plan security name is required for the research output path")
     normalized = unicodedata.normalize("NFKC", security).strip()
@@ -192,7 +202,9 @@ def company_directory_name(plan: dict[str, Any]) -> str:
         raise ResearchRunError("invalid_plan", "plan security name has no safe path characters")
     if len(normalized) > 80:
         normalized = normalized[:80].rstrip(" .-")
-    return f"{thscode[:6]}-{normalized}"
+    thscode = identity.get("thscode")
+    identity_slug = thscode[:6] if isinstance(thscode, str) else security_id.replace(":", "-")
+    return f"{identity_slug}-{normalized}"
 
 
 def allocate_default_workspace(
@@ -228,8 +240,24 @@ def operation_slug(item: dict[str, Any]) -> str:
 
 
 def operation_title(item: dict[str, Any]) -> str:
+    provider = str(item.get("provider", "fuyao"))
     operation = item["operation"]
     arguments = item["arguments"]
+    if provider == "yfinance":
+        titles = {
+            "search": "yfinance/Yahoo Finance ticker identity search",
+            "snapshot": "yfinance/Yahoo Finance market snapshot",
+            "valuations": "yfinance/Yahoo Finance valuation measures",
+            "history": "yfinance/Yahoo Finance adjusted daily price history",
+            "corporate-actions": "yfinance/Yahoo Finance corporate actions",
+        }
+        if operation in titles:
+            return titles[operation]
+        if operation == "financials":
+            return f"yfinance/Yahoo Finance {arguments['period']} {arguments['statement']} statements"
+        raise ResearchRunError("invalid_plan", f"unsupported yfinance provider operation: {operation}")
+    if provider != "fuyao":
+        raise ResearchRunError("invalid_plan", f"unsupported provider: {provider}")
     titles = {
         "search": "Fuyao A-share ticker search",
         "snapshot": "Fuyao A-share price snapshot",
@@ -253,12 +281,17 @@ def derived_case(plan: dict[str, Any], plan_sha256: str) -> dict[str, Any]:
     identity = plan.get("identity")
     operations = plan.get("provider_operations")
     requirements = plan.get("official_evidence_requirements")
-    if not isinstance(identity, dict) or not isinstance(operations, list) or not operations:
-        raise ResearchRunError("invalid_plan", "plan identity and provider operations are required")
+    if not isinstance(identity, dict) or not isinstance(operations, list):
+        raise ResearchRunError("invalid_plan", "plan identity and provider_operations are required")
     if not isinstance(requirements, list) or not requirements:
         raise ResearchRunError("invalid_plan", "official evidence requirements are required")
     seen: set[str] = set()
     case_operations: list[dict[str, Any]] = []
+    plan_provider = plan.get("provider")
+    if not isinstance(plan_provider, dict):
+        raise ResearchRunError("invalid_plan", "plan provider is required")
+    default_provider = str(plan_provider.get("adapter", "fuyao"))
+    documentation = provider_documentation(default_provider)
     for item in operations:
         if not isinstance(item, dict) or not isinstance(item.get("arguments"), dict):
             raise ResearchRunError("invalid_plan", "provider operation must be an object")
@@ -266,10 +299,15 @@ def derived_case(plan: dict[str, Any], plan_sha256: str) -> dict[str, Any]:
         if not isinstance(source_id, str) or not SOURCE_ID_RE.fullmatch(source_id) or source_id in seen:
             raise ResearchRunError("invalid_plan", "provider source IDs must be unique Sxx identifiers")
         seen.add(source_id)
+        operation_provider = str(item.get("provider", default_provider))
+        if operation_provider != default_provider:
+            raise ResearchRunError("invalid_plan", "provider operation adapter must match plan provider")
+        provider_documentation(operation_provider)
         case_operations.append(
             {
                 "id": source_id,
                 "title": operation_title(item),
+                "provider": operation_provider,
                 "operation": item["operation"],
                 "arguments": item["arguments"],
                 "output": f"{source_id}-{operation_slug(item)}.normalized.json",
@@ -310,7 +348,7 @@ def derived_case(plan: dict[str, Any], plan_sha256: str) -> dict[str, Any]:
         "plan_sha256": plan_sha256,
         "identity": identity,
         "as_of": plan.get("as_of"),
-        "provider_documentation": PROVIDER_DOCUMENTATION,
+        "provider_documentation": documentation,
         "operations": case_operations,
         "official_sources": official_sources,
     }
@@ -350,9 +388,9 @@ def reconciliation_template(plan: dict[str, Any], contract: dict[str, Any]) -> d
     return {
         "schema": financial_reconciliation.SCHEMA,
         "security": identity["security"],
-        "thscode": identity["thscode"],
+        "security_id": identity["security_id"],
         "as_of": plan["as_of"],
-        "base_currency": "CNY",
+        "base_currency": identity["base_currency"],
         "required_checks": contract["required_checks"],
         "period_basis": [
             {
@@ -402,13 +440,17 @@ def receipt_bound_files(plan: dict[str, Any]) -> set[str]:
 
 def render_draft(template: str, plan: dict[str, Any]) -> str:
     identity = plan["identity"]
-    provider_status = "configured" if plan.get("provider", {}).get("configured") is True else "unavailable"
+    provider = plan.get("provider", {})
+    provider_status = provider.get("availability") or (
+        "available" if provider.get("configured") is True else "unavailable"
+    )
     replacements = {
         "{{screen_or_research_or_earnings}}": "research",
         "{{security_name}}": identity["security"],
-        "{{six_digit_code.exchange}}": identity["thscode"],
+        "{{market_symbol}}": identity["security_id"],
         "{{YYYY-MM-DD}}": plan["as_of"],
-        "{{configured_or_unavailable}}": provider_status,
+        "{{base_currency}}": identity["base_currency"],
+        "{{provider_availability}}": provider_status,
     }
     for marker, value in replacements.items():
         template = template.replace(marker, str(value))
@@ -450,7 +492,7 @@ def initialize_workspace(
                     "type": "initialized",
                     "at": utc_now(),
                     "details": {
-                        "thscode": plan["identity"]["thscode"],
+                        "security_id": plan["identity"]["security_id"],
                         "as_of": plan["as_of"],
                         "provider_operation_count": len(case["operations"]),
                     },
@@ -554,16 +596,18 @@ def record_event(root: Path, state: dict[str, Any], event_type: str, details: di
 
 
 def operation_command(runtime: Path, item: dict[str, Any], capture_root: Path) -> list[str]:
+    provider = str(item.get("provider", "fuyao"))
     operation = item.get("operation")
     arguments = item.get("arguments")
     if not isinstance(arguments, dict):
         raise ResearchRunError("invalid_case", f"{item.get('id')}.arguments must be an object")
     option_orders = {
         "search": [("query", "--query"), ("limit", "--limit")],
-        "snapshot": [("thscodes", "--thscodes")],
-        "valuations": [("thscodes", "--thscodes")],
+        "snapshot": [("thscodes", "--thscodes"), ("symbol", "--symbol")],
+        "valuations": [("thscodes", "--thscodes"), ("symbol", "--symbol")],
         "history": [
             ("thscode", "--thscode"),
+            ("symbol", "--symbol"),
             ("start", "--start"),
             ("end", "--end"),
             ("interval", "--interval"),
@@ -571,6 +615,7 @@ def operation_command(runtime: Path, item: dict[str, Any], capture_root: Path) -
         ],
         "financials": [
             ("thscode", "--thscode"),
+            ("symbol", "--symbol"),
             ("statement", "--statement"),
             ("period", "--period"),
             ("limit", "--limit"),
@@ -578,7 +623,12 @@ def operation_command(runtime: Path, item: dict[str, Any], capture_root: Path) -
             ("end", "--end"),
         ],
         "indicators": [("thscode", "--thscode"), ("report", "--report")],
-        "corporate-actions": [("thscode", "--thscode"), ("start", "--start"), ("end", "--end")],
+        "corporate-actions": [
+            ("thscode", "--thscode"),
+            ("symbol", "--symbol"),
+            ("start", "--start"),
+            ("end", "--end"),
+        ],
         "calendar": [("start", "--start"), ("end", "--end")],
     }
     if operation not in option_orders:
@@ -587,7 +637,7 @@ def operation_command(runtime: Path, item: dict[str, Any], capture_root: Path) -
     unknown = sorted(set(arguments) - {name for name, _ in option_order})
     if unknown:
         raise ResearchRunError("invalid_case", f"unsupported arguments for {operation}: {', '.join(unknown)}")
-    command = [sys.executable, str(runtime), "data", str(operation)]
+    command = [sys.executable, str(runtime), "data", str(operation), "--provider", provider]
     for name, option in option_order:
         if name in arguments and arguments[name] is not None:
             command.extend([option, str(arguments[name])])
@@ -598,7 +648,8 @@ def operation_command(runtime: Path, item: dict[str, Any], capture_root: Path) -
 def operation_status(
     item: dict[str, Any], payload: dict[str, Any], returncode: int | None = None
 ) -> tuple[str, dict[str, Any] | None]:
-    if payload.get("schema") != "money-craft.data-response.v1" or payload.get("provider") != "fuyao":
+    expected_provider = str(item.get("provider", "fuyao"))
+    if payload.get("schema") != "money-craft.data-response.v1" or payload.get("provider") != expected_provider:
         raise ResearchRunError("invalid_response", f"{item['id']} response identity is invalid")
     expected = str(item["operation"])
     actual = payload.get("operation")
@@ -627,6 +678,25 @@ def validate_identity(payload: dict[str, Any], case: dict[str, Any]) -> None:
     if not isinstance(items, list):
         raise ResearchRunError("identity_mismatch", "ticker search data.item must be an array")
     identity = case["identity"]
+    provider = str(payload.get("provider"))
+    if provider == "yfinance":
+        expected_symbol = identity.get("provider_identifiers", {}).get("yfinance")
+        matches = [
+            item
+            for item in items
+            if isinstance(item, dict) and str(item.get("symbol", "")).upper() == expected_symbol
+        ]
+        if len(matches) != 1:
+            raise ResearchRunError("identity_mismatch", "yfinance search did not resolve the exact provider symbol")
+        currency = matches[0].get("currency")
+        if isinstance(currency, str) and currency and currency.upper() != identity["base_currency"]:
+            raise ResearchRunError("identity_mismatch", "yfinance search currency conflicts with the plan identity")
+        quote_type = matches[0].get("quoteType")
+        if isinstance(quote_type, str) and quote_type.upper() not in {"EQUITY", "STOCK"}:
+            raise ResearchRunError("identity_mismatch", "yfinance search result is not a listed equity")
+        return
+    if provider != "fuyao":
+        raise ResearchRunError("identity_mismatch", "unsupported provider identity response")
     matches = [
         item
         for item in items
@@ -648,6 +718,11 @@ def collect_workspace(
     runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
     root, _plan, case, state = load_workspace(workspace)
+    if not case["operations"]:
+        raise ResearchRunError(
+            "provider_unavailable",
+            "this research plan has no executable structured-data provider operations",
+        )
     evidence_root = root / "evidence"
     capture_root = evidence_root / "captures"
     capture_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -752,8 +827,8 @@ def validate_official_file(path: Path, kind: str) -> tuple[int, str]:
         prefix = handle.read(1024).lstrip().lower()
     is_pdf = prefix.startswith(b"%pdf-")
     is_html = b"<" in prefix
-    if kind == "official-document" and not is_pdf:
-        raise ResearchRunError("invalid_official_source", "official document is not a PDF")
+    if kind == "official-document" and not (is_pdf or is_html):
+        raise ResearchRunError("invalid_official_source", "official filing must be PDF or HTML")
     if kind == "official-index" and not is_html:
         raise ResearchRunError("invalid_official_source", "official index is not HTML")
     if kind == "official-material" and not (is_pdf or is_html):
@@ -912,11 +987,16 @@ def document_audits(path: Path, plan: dict[str, Any], schema: str) -> dict[str, 
     expected = {
         "schema": schema,
         "security": plan["identity"]["security"],
-        "thscode": plan["identity"]["thscode"],
+        "security_id": plan["identity"]["security_id"],
         "as_of": plan["as_of"],
-        "base_currency": "CNY",
+        "base_currency": plan["identity"]["base_currency"],
     }
-    identity_errors = [f"{key} must match plan.json" for key, value in expected.items() if metadata.get(key) != value]
+    actual = dict(metadata)
+    try:
+        actual["security_id"] = report_audit.security_id_from_metadata(metadata)
+    except ValueError:
+        pass
+    identity_errors = [f"{key} must match plan.json" for key, value in expected.items() if actual.get(key) != value]
     if identity_errors:
         report_result = dict(report_result)
         report_result["valid"] = False
@@ -966,8 +1046,9 @@ def reconciliation_audit(root: Path, plan: dict[str, Any], case: dict[str, Any])
         expected_contract=contract,
         expected_identity={
             "security": plan["identity"]["security"],
-            "thscode": plan["identity"]["thscode"],
+            "security_id": plan["identity"]["security_id"],
             "as_of": plan["as_of"],
+            "base_currency": plan["identity"]["base_currency"],
         },
         allowed_source_ids=allowed_source_ids,
     )
@@ -998,9 +1079,13 @@ def research_status(workspace: Path | str) -> dict[str, Any]:
     root, plan, case, state = load_workspace(workspace)
     provider_results, provider_pending, provider_gaps = inspect_provider(root, case)
     official_results, official_pending = inspect_official(root, case)
-    provider_stage = "pending"
-    if len(provider_pending) < len(case["operations"]):
+    provider_stage = "not_applicable" if not case["operations"] else "pending"
+    if case["operations"] and len(provider_pending) < len(case["operations"]):
         provider_stage = "incomplete" if provider_pending else ("complete_with_gaps" if provider_gaps else "complete")
+    provider_availability = plan.get("provider", {}).get("availability")
+    if not case["operations"] and provider_availability not in {None, "available"}:
+        adapter = plan.get("provider", {}).get("adapter", "fuyao")
+        provider_gaps.append(f"provider:{adapter}:{provider_availability}")
     required_official_count = sum(1 for item in case["official_sources"] if item.get("required", True))
     official_stage = "pending" if len(official_pending) == required_official_count else (
         "incomplete" if official_pending else "complete"
@@ -1085,7 +1170,7 @@ def provider_source(root: Path, item: dict[str, Any]) -> dict[str, Any]:
             raise ResearchRunError("missing_capture", f"missing captured provider response: {item['id']}")
         files.append(
             {
-                "role": "raw-response",
+                "role": "raw-response" if item.get("provider", "fuyao") == "fuyao" else "adapter-export",
                 "path": f"evidence/captures/{item['id']}/response.json",
                 "sha256": sha256_file(raw),
             }
@@ -1094,7 +1179,7 @@ def provider_source(root: Path, item: dict[str, Any]) -> dict[str, Any]:
         "id": item["id"],
         "kind": "provider-response",
         "title": item["title"],
-        "provider": "fuyao",
+        "provider": item.get("provider", "fuyao"),
         "operation": payload.get("operation"),
         "retrieved_at": payload.get("fetched_at"),
         "status": status,
@@ -1121,11 +1206,13 @@ def build_manifest(root: Path, plan: dict[str, Any], case: dict[str, Any]) -> di
     sources = [provider_source(root, item) for item in case["operations"]]
     sources.extend(official_source(root, item) for item in case["official_sources"] if item.get("status") == "imported")
     retrieved = [item.get("retrieved_at") for item in sources if isinstance(item.get("retrieved_at"), str)]
-    return {
+    identity = plan["identity"]
+    manifest = {
         "schema": MANIFEST_SCHEMA,
-        "case_id": plan["identity"]["ticker"],
-        "security": plan["identity"]["security"],
-        "thscode": plan["identity"]["thscode"],
+        "case_id": identity["ticker"] if "thscode" in identity else identity["security_id"],
+        "security": identity["security"],
+        "security_id": identity["security_id"],
+        "base_currency": identity["base_currency"],
         "as_of": plan["as_of"],
         "data_cutoff": max(retrieved) if retrieved else None,
         "distribution": {
@@ -1135,10 +1222,13 @@ def build_manifest(root: Path, plan: dict[str, Any], case: dict[str, Any]) -> di
             "note": "Only source metadata and SHA-256 bindings may be distributed. Evidence files remain local.",
         },
         "local_evidence": {"default_root": "evidence", "required_for_public_validation": False},
-        "provider_documentation": PROVIDER_DOCUMENTATION,
+        "provider_documentation": case["provider_documentation"],
         "source_count": len(sources),
         "sources": sorted(sources, key=lambda item: int(item["id"][1:])),
     }
+    if "thscode" in identity:
+        manifest["thscode"] = identity["thscode"]
+    return manifest
 
 
 def finalize_workspace(workspace: Path | str) -> dict[str, Any]:

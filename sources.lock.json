@@ -1,6 +1,6 @@
 {
   "schema_version": "money-craft.sources.v1",
-  "verified_at": "2026-08-24",
+  "verified_at": "2026-09-01",
   "upstreams": [
     {
       "id": "ai-berkshire",
@@ -47,6 +47,83 @@
               ],
               "classification": "reimplemented",
               "mechanism": "restatement-basis tagging, three-statement reconciliation, and accounting-presentation-to-economics receipts"
+            }
+          ]
+        },
+        {
+          "from_commit": "5402e44d4c2dfe23ef9e15139091acb057181219",
+          "through_commit": "12b1aefccb28a4d4ac21ce1b7b3d8e058ca2a6f7",
+          "reviewed_at": "2026-09-01",
+          "disposition": "pin-retained-selective-reimplementation",
+          "changed_scope": ["documentation", "skills", "excluded-content"],
+          "mapped_source_changes": 0,
+          "coverage": {
+            "changed_files": 54,
+            "reviewed_files": 7,
+            "accounted_excluded_files": 47,
+            "pending_files": 0,
+            "categories": {
+              "documentation": 3,
+              "skills": 4,
+              "excluded-content": 47
+            }
+          },
+          "mechanism_observations": [
+            {
+              "sources": [
+                "skills/era-alpha.md",
+                "reports/12家公司10年后利润结局推演-20260827.md"
+              ],
+              "targets": [
+                "skills/money-craft/references/high-growth-alpha.md",
+                "skills/money-craft/references/global-investing.md",
+                "skills/money-craft/references/routing.md",
+                "skills/money-craft/references/company-research.md",
+                "skills/money-craft/references/valuation-and-thesis.md"
+              ],
+              "classification": "reimplemented",
+              "mechanism": "global industry-and-company alpha routing with bounded value-chain mapping, cross-market candidates, high-frequency cross-checks, normalized baselines, contradiction handling, and falsifiable inflection metrics"
+            },
+            {
+              "sources": [
+                "reports/破净与净现金股全球筛选-20260827.md",
+                "reports/折扣零售产业链/折扣零售产业链投资研究-唯品会为起点-20260827.md"
+              ],
+              "targets": [
+                "skills/money-craft/references/screening.md",
+                "skills/money-craft/references/valuation-and-thesis.md",
+                "skills/money-craft/references/financial-data-and-evidence.md"
+              ],
+              "classification": "reimplemented",
+              "mechanism": "strict cash ownership, availability, debt, lease, minority-interest, and share-count reconciliation before net-cash, enterprise-value, or asset-discount claims"
+            }
+          ],
+          "non_absorbed_decisions": [
+            {
+              "sources": [
+                "codex-prompts/era-alpha.md",
+                "codex-skills/era-alpha/SKILL.md",
+                "codex-skills/investment-research/SKILL.md"
+              ],
+              "disposition": "provenance-only",
+              "reason": "generated compatibility artifacts are not upstream canonical workflow sources"
+            },
+            {
+              "sources": ["reports/"],
+              "file_count": 45,
+              "disposition": "content-excluded",
+              "reason": "research outputs are review inputs, not Money Craft runtime or distributable source"
+            },
+            {
+              "sources": ["实盘记录/"],
+              "file_count": 2,
+              "disposition": "content-excluded",
+              "reason": "real-account records remain outside the product and public evidence boundary"
+            },
+            {
+              "sources": ["reports/快手/快手-赔率表与分批建仓框架-20260827.md"],
+              "disposition": "scope-rejected",
+              "reason": "position sizing, staged order placement, and trade instructions remain outside this source review and require separate user constraints and execution authorization"
             }
           ]
         }
@@ -115,6 +192,69 @@
       "url": "https://fuyao.aicubes.cn/llms-full.txt",
       "sha256": "de404f225ce741986864095ee26f724d38a8338d0bcbfabb0e5a52e0d1d0714f",
       "used_for": ["REST paths", "parameters", "response envelope", "error semantics"]
+    },
+    {
+      "id": "yfinance-pypi-1.7.0",
+      "url": "https://pypi.org/pypi/yfinance/1.7.0/json",
+      "sha256": "264443167e002c4596a0198d2854bfaafd21c7acd62db4d16b82d4fd95450c5c",
+      "version": "1.7.0",
+      "wheel_sha256": "91281ecd1f71069a37155ff8653aff2d3085f3492bd8721f18b70955da62911a",
+      "sdist_sha256": "442f780d13d3e52fefa6c721c2c9bfee321078c1987d6585ec193b5c24382f8a",
+      "used_for": ["optional dependency version", "distribution hashes", "license and use boundary"]
+    },
+    {
+      "id": "yfinance-ticker-reference",
+      "url": "https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.html",
+      "sha256": "be6b84079403e7f493ef884d9056a7bb17fce2bf529df756f2672955c51ffc36",
+      "used_for": ["Ticker operations", "financial statements", "valuation and history adapter contract"]
+    },
+    {
+      "id": "yfinance-search-reference",
+      "url": "https://ranaroussi.github.io/yfinance/reference/api/yfinance.Search.html",
+      "sha256": "82e1da690131cb7fce26a828ff81878539d35efc3ff0b8af81cc5cd6c144e3fc",
+      "used_for": ["ticker search and identity disambiguation"]
+    },
+    {
+      "id": "fred-api-key-reference",
+      "url": "https://fred.stlouisfed.org/docs/api/api_key.html",
+      "sha256": "845262e1b7443c7f4fa10d6e8db56068320a9241029c90c45578c50bc880c0cd",
+      "used_for": ["credential format", "per-application API key contract"]
+    },
+    {
+      "id": "fred-series-search-reference",
+      "url": "https://fred.stlouisfed.org/docs/api/fred/series_search.html",
+      "sha256": "335a71e853296e3b53d39d62736d7bf87e74fc9957033ef20ac45a2bc52cece2",
+      "used_for": ["economic series search", "search result metadata"]
+    },
+    {
+      "id": "fred-series-reference",
+      "url": "https://fred.stlouisfed.org/docs/api/fred/series.html",
+      "sha256": "bd7b27ae539e62b15e53223a148b2689fca073070ccff05824664d68125d747a",
+      "used_for": ["series metadata", "source, units, frequency, seasonal adjustment, and notes"]
+    },
+    {
+      "id": "fred-series-observations-reference",
+      "url": "https://fred.stlouisfed.org/docs/api/fred/series_observations.html",
+      "sha256": "a29c601f11d6b5065f7123b747d18052284474dd56b3aa2448762f1042f8ec0f",
+      "used_for": ["observations", "date ranges", "units transformations", "vintage queries"]
+    },
+    {
+      "id": "fred-series-vintagedates-reference",
+      "url": "https://fred.stlouisfed.org/docs/api/fred/series_vintagedates.html",
+      "sha256": "fa77f861e122bbd38c2fe56dac96b73b6cf7cd05a8befece483408a9f33e27ed",
+      "used_for": ["ALFRED revision dates", "historical information-set audit"]
+    },
+    {
+      "id": "fred-realtime-period-reference",
+      "url": "https://fred.stlouisfed.org/docs/api/fred/realtime_period.html",
+      "sha256": "f2f6ec5e9a9b3c9bd638cb98d14b15f4678c2f6841d1550914d75b6b2825ae20",
+      "used_for": ["FRED versus ALFRED mode", "as-known-on closed-period semantics"]
+    },
+    {
+      "id": "fred-api-terms",
+      "url": "https://fred.stlouisfed.org/docs/api/terms_of_use.html",
+      "sha256": "08d8a353e21d2f60f25c846a9f74c4c346d206912e752260e04db8fca3f5bb73",
+      "used_for": ["required notice", "rate-limit boundary", "third-party series rights"]
     }
   ]
 }

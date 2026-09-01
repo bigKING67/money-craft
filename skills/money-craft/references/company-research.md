@@ -2,10 +2,10 @@
 
 ## 统一入口
 
-证券身份、`as_of` 和最新正式报告期明确后，先运行 `money_craft.py research plan`。计划必须绑定公司全称、完整 `thscode`、A 股交易所、最新报告期和最近年度报告期，并输出：
+证券身份、`as_of` 和最新正式报告期明确后，先运行 `money_craft.py research plan`。计划必须绑定公司全称、唯一 `security_id`、市场、基础币种、最新报告期、真实期末日和最近年度报告期，并输出：
 
 - `identity -> official-evidence -> provider-cross-check -> research -> valuation-and-thesis -> audit` 六阶段门禁；
-- 固定来源 ID 的有界 Provider 操作矩阵；
+- 固定来源 ID 的有界 Provider 操作矩阵；无适配器或未配置时矩阵为空并声明 gap，不阻断正式文件研究；
 - 最新正式报告、年度报告、交易所或公司 IR 三类必需一手证据，以及按重要性触发的重大事项、管理层问答和期后事项来源槽位；
 - report、thesis、financial reconciliation、metadata-only evidence manifest 和五项 audit artifact 合同。
 
@@ -15,13 +15,21 @@
 
 需要落地研究时，使用 `research init` 将 plan 固化到本地 workspace。`case.json` 必须由 `plan.json` 自动派生；不得另写一份 Provider 操作列表。workspace 的状态真源包括不可变 plan、派生 case、append-only `run-state.json`、私有 `evidence/`、报告、论文、审计和完成收据。
 
-1. `research collect --resume` 只执行 case 内有界操作，已有 normalized response 和 capture 不覆盖；单项失败形成显式 Provider gap，并返回非零结果。
+1. `research collect --resume` 只在 case 含 Provider 操作时执行有界采集，已有 normalized response 和 capture 不覆盖；无适配器时不要调用 `collect`，直接导入正式来源。单项失败形成显式 Provider gap，并返回非零结果。
 2. `research import-official` 逐项导入 plan 声明的 `S11/S12/S13`；当重大交易或资本事项、官方问答、报告期后事项影响结论时，再分别导入 `S18/S19/S20`。命令校验 PDF/HTML、HTTPS 来源、大小和 SHA-256，不负责联网下载。
 3. `research status` 离线重算每一阶段，列出 missing sources 和 provider gaps；文件存在不等于阶段完成。
 4. 完成 plan 自动生成的 `financial-reconciliation.json`，再写报告和 thesis。`research finalize` 生成 metadata-only manifest、四项 report/thesis audit 和 reconciliation audit；只有身份、证据、文档、计算与勾稽全部有效时才产生 completion receipt。
 5. 收据绑定 plan、case、manifest、报告、论文和审计文件哈希。收据之后任一绑定文件变化都必须显示 stale，不得继续宣称完成。
 
-默认 workspace 位于 `~/Documents/sixseven/money/<ticker>-<company>/<as_of>/.research/<run-id>/`；`MONEY_CRAFT_OUTPUT_ROOT` 和 `--output-root` 可改变根目录，显式 `--workspace` 可完全覆盖。必须复用 `init` 返回的动态路径，不使用 `latest` 软链接或共享可变目录。`.research` 仅是 Money Craft 私有研究态，不得伪装成正式档案；完成正式投资账本、审计、离线 verifier 和 seal 后，准出真源才位于同一公司/日期下的 `revisions/rNNNN/`。任何凭据、原始 Provider payload、下载公告或网页快照都不得进入 Git。
+默认 workspace 位于 `~/Documents/sixseven/money/<identity>-<company>/<as_of>/.research/<run-id>/`；A 股旧路径仍保持六位代码前缀，其他市场使用 market-symbol 前缀。`MONEY_CRAFT_OUTPUT_ROOT` 和 `--output-root` 可改变根目录，显式 `--workspace` 可完全覆盖。必须复用 `init` 返回的动态路径，不使用 `latest` 软链接或共享可变目录。`.research` 仅是 Money Craft 私有研究态，不得伪装成正式档案；完成正式投资账本、审计、离线 verifier 和 seal 后，准出真源才位于同一公司/日期下的 `revisions/rNNNN/`。任何凭据、原始 Provider payload、下载公告或网页快照都不得进入 Git。
+
+## 全球市场口径
+
+- `security_id` 是证券身份，发行人不是证券。A/H 股、普通股/ADR、不同投票权类别分别建身份，并记录权利、股本换算和发行人映射。
+- 非 A 股显式记录财政期标签和真实期末日，不把自然季度日历套到 52/53 周财年、非 12 月年结或变更财年的公司。
+- 同时保留财报列报币种、交易币种和估值基础币种；汇率来源、时间点和换算公式进入证据链。
+- 会计准则、非 GAAP 指标、租赁、少数股东、股权激励和股份稀释在跨市场比较前统一。无法统一时给范围而非伪精确排名。
+- 正式来源按当地监管机构、交易所和公司 IR 获取；SEC/EDGAR、港交所、各国监管披露或发行人 HTML filing 都可作为正式文件。任何结构化 Provider 的 symbol 检索都不能替代非 A 股法定身份与 share class 验证。
 
 ## 重大披露来源路由
 
@@ -55,6 +63,8 @@
 6. **逆向思考**：列出最强反方论证、可导致永久损失的路径、可能被忽略的替代品和监管变化。
 7. **估值与安全边际**：使用适合商业模式的方法，至少给悲观/中性/乐观三种情景和关键敏感变量。
 8. **结论**：说明当前证据支持什么、不支持什么、需要观察什么，以及哪些事实会推翻结论。
+
+若结论把公司描述为“时代主线”“行业核心资产”或高增长赛道的 α，必须同时加载 `high-growth-alpha.md`。该主张需要有界产业链、可比同行、财报与高频经营信号、矛盾台账和可观察拐点共同支持；行业景气或股价表现本身只能证明 β，不能证明公司 α。
 
 ## 护城河证据表
 

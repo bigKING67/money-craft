@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from financial_rigor import CONTEXT, CalculationError, calculate, decimal_value, relative_error
+import report_audit
 
 SCHEMA = "money-craft.financial-reconciliation.v1"
 AUDIT_SCHEMA = "money-craft.financial-reconciliation-audit.v1"
 SOURCE_ID_RE = re.compile(r"^S\d{2,4}$")
 SECRET_RE = re.compile(rb"sk-fuyao-[A-Za-z0-9_-]{12,}")
-THSCODE_RE = re.compile(r"^\d{6}\.(?:SH|SZ|BJ)$")
 PERIOD_RE = re.compile(r"^(?:19|20)\d{2}-[1-4]$")
 CHECK_ID_RE = re.compile(r"^FR\d{2,4}$")
 MANDATORY_CHECKS = {"balance-sheet-equation", "cash-balance-tie"}
@@ -137,28 +137,36 @@ def audit_payload(
     if payload.get("schema") != SCHEMA:
         errors.append(f"schema must be {SCHEMA}")
     security = nonempty_text(payload.get("security"), "security", errors)
-    thscode = payload.get("thscode")
-    if not isinstance(thscode, str) or not THSCODE_RE.fullmatch(thscode):
-        errors.append("thscode must be a complete A-share code")
+    identity_metadata = {
+        key: value
+        for key in ("security_id", "thscode")
+        if isinstance((value := payload.get(key)), str)
+    }
+    try:
+        security_id = report_audit.security_id_from_metadata(identity_metadata)
+    except ValueError as exc:
+        errors.append(str(exc))
+        security_id = ""
     as_of = payload.get("as_of")
     try:
         dt.date.fromisoformat(str(as_of))
     except ValueError:
         errors.append("as_of must be YYYY-MM-DD")
-    if payload.get("base_currency") != "CNY":
-        errors.append("base_currency must be CNY")
+    base_currency = payload.get("base_currency")
+    if not isinstance(base_currency, str) or not report_audit.CURRENCY_RE.fullmatch(base_currency):
+        errors.append("base_currency must be a three-letter uppercase currency code")
     if expected_identity:
         expected = {
             "security": expected_identity.get("security"),
-            "thscode": expected_identity.get("thscode"),
+            "security_id": expected_identity.get("security_id"),
             "as_of": expected_identity.get("as_of"),
-            "base_currency": "CNY",
+            "base_currency": expected_identity.get("base_currency"),
         }
         actual = {
             "security": security,
-            "thscode": thscode,
+            "security_id": security_id,
             "as_of": as_of,
-            "base_currency": payload.get("base_currency"),
+            "base_currency": base_currency,
         }
         for field, value in expected.items():
             if actual.get(field) != value:

@@ -31,8 +31,9 @@ Money Craft 的 `report.md`、来源、审计和离线 verifier 是研究真源�
 核心研究运行时仍只需要 Python 标准库。HTML/PDF 渲染另外需要 `Markdown`、`WeasyPrint` 和 `pypdf`：
 
 ```bash
-python3 -m venv ~/.config/money-craft/report-venv
-~/.config/money-craft/report-venv/bin/python -m pip install \
+MONEY_CRAFT_DATA_HOME="${MONEY_CRAFT_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/money-craft}"
+python3 -m venv "$MONEY_CRAFT_DATA_HOME/venvs/report"
+"$MONEY_CRAFT_DATA_HOME/venvs/report/bin/python" -m pip install \
   -r "$MONEY_CRAFT_SKILL_DIR/requirements-report.txt"
 ```
 
@@ -43,7 +44,7 @@ python3 -m venv ~/.config/money-craft/report-venv
 下面的命令只生成显式目录中的派生物，不创建或修改正式 research revision：
 
 ```bash
-REPORT_PYTHON="${MONEY_CRAFT_REPORT_PYTHON:-$HOME/.config/money-craft/report-venv/bin/python}"
+REPORT_PYTHON="${MONEY_CRAFT_REPORT_PYTHON:-${MONEY_CRAFT_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/money-craft}/venvs/report/bin/python}"
 "$REPORT_PYTHON" "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" report render \
   --source <revision>/report.md \
   --output-dir <repo-external-preview-dir> \

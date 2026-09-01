@@ -6,17 +6,24 @@
 |---|---|---|
 | 快速看看基本面、排雷、是否值得深挖 | `screen` | `screening.md` + 数据证据规则 |
 | 完整分析公司、商业模式、护城河和风险 | `research` | `company-research.md` + 数据证据规则 |
+| 判断全球某家公司是否为时代主线或高增长赛道的核心 α | `research + thesis + alpha` | `company-research.md` + `valuation-and-thesis.md` + `high-growth-alpha.md` + 数据证据规则 |
+| 研究全球行业、产业链、国家或主题并寻找 α | `industry/theme + alpha` | `global-investing.md` + `high-growth-alpha.md` + 数据证据规则 |
+| ETF、基金、债券、现金管理、跨币种或组合问题 | `asset/portfolio` | `global-investing.md` + 数据证据规则；涉及具体公司再加载对应公司规则 |
 | 年报、季报、业绩发生了什么变化 | `earnings` | `earnings-review.md` + 数据证据规则 |
 | 估值、建立投资逻辑、更新原有逻辑 | `thesis` | `valuation-and-thesis.md` + 数据证据规则 |
 | 将已完成的论文更新封存到公司级历史 | `track` | `tracking-workflow.md` + `valuation-and-thesis.md` |
 
 用户同时要求多个模式时，按 `screen -> research -> earnings/thesis` 复用已核验事实，不重复抓取同一响应。快速筛选触发硬否决后，只有用户仍明确要求时才继续完整研究。
 
+`alpha` 既可用于具体公司，也可作为独立行业/主题研究。公司模式要先解析唯一 `security_id`，再用有界产业链、全球同行、财报和高频经营证据检验“核心 α”；行业模式要先定义地域、价值链边界、时间窗和可投资表达，再形成候选池及排除理由。两者都不得从热门叙事直接跳到买卖结论。
+
 论文跟踪不是独立的研究结论生成模式：先按 `earnings`、`research` 或 `thesis` 获得新证据和更新内容，再用 `track` 的离线门禁封存。
 
 ## 证券身份
 
-先确定公司全称、完整 `thscode`、交易所、币种和 share class。Money Craft v0.2 只支持 `.SH`、`.SZ`、`.BJ` 的 A 股上市公司。未上市公司、基金、指数、港美股和纯行业研究返回范围说明，不套用 A 股模板。
+先确定对象类型。上市证券记录发行人全称、唯一 `security_id`、市场、交易币种、报告币种、工具类型和 share class；基金/ETF 记录产品标识、基准、份额类别和计价币种；债券记录发行人、ISIN/本地代码、币种、票息和到期日；组合记录基础币种和用户约束。
+
+Money Craft 的范围是全球投资与理财研究。`thscode` 和 Yahoo symbol 都只是 Provider identifier，不能作为产品身份。当前确定性 `research plan/init/status/finalize` 直接支持全球上市公司；A 股可由 `--thscode` 兼容派生，其他市场使用 `--security-id`、`--base-currency`、真实报告期结束日和最近年度报告期。A 股默认选择 Fuyao，港美股默认选择可选 yfinance；没有结构化适配器时保留 `PROVIDER_GAP`，继续走正式来源；没有当前正式来源时才停止事实型判断。
 
 ## 资料可得性
 

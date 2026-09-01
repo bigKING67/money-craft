@@ -2,11 +2,11 @@
 schema: money-craft.thesis.v1
 workflow: thesis
 security: {{security_name}}
-thscode: {{six_digit_code.exchange}}
+security_id: {{market_symbol}}
 as_of: {{YYYY-MM-DD}}
 data_cutoff: {{ISO-8601}}
-base_currency: CNY
-provider_status: {{configured_or_unavailable}}
+base_currency: {{base_currency}}
+provider_status: {{provider_availability}}
 ---
 
 # {{security_name}} 投资论文
@@ -52,4 +52,3 @@ provider_status: {{configured_or_unavailable}}
 
 - [S01] {{official_source_url_or_local_capture_path}}
 - [S02] {{independent_source_url_or_local_capture_path}}
-

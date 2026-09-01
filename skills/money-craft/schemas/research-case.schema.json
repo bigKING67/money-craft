@@ -18,7 +18,7 @@
     "identity": {"type": "object"},
     "as_of": {"type": "string", "format": "date"},
     "provider_documentation": {"type": "string", "format": "uri"},
-    "operations": {"type": "array", "minItems": 13, "items": {"type": "object"}},
+    "operations": {"type": "array", "items": {"type": "object"}},
     "official_sources": {"type": "array", "minItems": 3, "items": {"type": "object"}}
   },
   "additionalProperties": false
