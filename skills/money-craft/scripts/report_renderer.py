@@ -116,7 +116,8 @@ def load_json(path: Path | None) -> dict[str, Any] | list[Any] | None:
 
 
 def normalize_metadata_key(value: str) -> str:
-    value = re.sub(r"[*_`]", "", value)
+    # Formatting may wrap a key; underscores inside YAML identifiers are semantic.
+    value = re.sub(r"^([*_`]+)(.*?)\1$", r"\2", value.strip())
     return re.sub(r"\s+", " ", value).strip().strip("：:")
 
 
@@ -203,6 +204,9 @@ def first_match(text: str, patterns: Iterable[str]) -> str | None:
 
 
 def report_identity(parsed: ParsedReport) -> str:
+    identity = metadata_value(parsed.metadata, "security_id")
+    if identity:
+        return identity
     ticker = first_match(parsed.source_text, (r"\b(\d{6}\.(?:SH|SZ|BJ))\b",))
     if ticker:
         return ticker
@@ -225,9 +229,12 @@ def data_cutoff(parsed: ParsedReport) -> str:
 
 
 def latest_period(parsed: ParsedReport) -> str:
-    value = metadata_value(parsed.metadata, "最新正式报告期")
+    value = metadata_value(parsed.metadata, "最新正式报告期", "latest_report")
     if value:
         return value
+    half_year = re.search(r"(20\d{2})\s*年(?:半年度报告|上半年)", parsed.source_text)
+    if half_year:
+        return f"{half_year.group(1)} 半年度"
     match = re.search(r"(20\d{2})\s*年第([一二三四1-4])季度", parsed.source_text)
     return f"{match.group(1)} Q{match.group(2)}" if match else "见正文"
 
@@ -255,8 +262,8 @@ def metric_items(parsed: ParsedReport) -> list[dict[str, str]]:
     price = first_match(
         text,
         (
-            r"(?:前复权)?收盘价(?:为|：)?\s*([0-9]+(?:\.[0-9]+)?)\s*元",
-            r"价格\s*([0-9]+(?:\.[0-9]+)?)\s*元",
+            r"(?:前复权)?收盘价(?:为|：)?\s*((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)\s*元",
+            r"价格\s*((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)\s*元",
         ),
     )
     pe = first_match(
@@ -266,6 +273,9 @@ def metric_items(parsed: ParsedReport) -> list[dict[str, str]]:
             r"对应约?\s*([0-9]+(?:\.[0-9]+)?)\s*倍.*?PE",
         ),
     )
+    ttm_pe = first_match(text, (r"PE\s*TTM\s*(?:约|为)?\s*([0-9]+(?:\.[0-9]+)?)\s*倍",))
+    if ttm_pe:
+        pe = ttm_pe
     adjusted = first_match(
         text,
         (r"扣非归母净利润(?:同比)?下降\s*(?:约)?\s*([0-9]+(?:\.[0-9]+)?)%",),
@@ -282,7 +292,7 @@ def metric_items(parsed: ParsedReport) -> list[dict[str, str]]:
             "tone": "neutral",
         },
         {
-            "label": "静态 PE",
+            "label": "PE · TTM" if ttm_pe else "静态 PE",
             "value": f"{pe}×" if pe else "见估值",
             "note": "报告明示口径",
             "tone": "neutral",
@@ -346,6 +356,16 @@ def financial_trend_table(tables: list[MarkdownTable]) -> MarkdownTable | None:
         labels = " ".join(row[0] for row in table.rows if row)
         if years >= 3 and "营业收入" in labels and "归母净利润" in labels:
             return table
+        # The canonical acceptance report puts years in rows, not columns.
+        if (len(table.rows) >= 3 and table.headers[0] in {"年度", "年份", "年"}
+                and all(re.fullmatch(r"20\d{2}", clean_markdown_text(row[0])) for row in table.rows)
+                and "营业收入" in " ".join(table.headers)
+                and "归母净利润" in " ".join(table.headers)):
+            return MarkdownTable(
+                headers=("指标", *(clean_markdown_text(row[0]) for row in table.rows)),
+                rows=tuple((header, *(row[index] for row in table.rows))
+                           for index, header in enumerate(table.headers) if index),
+            )
     return None
 
 
@@ -454,7 +474,7 @@ def financial_chart(table: MarkdownTable | None) -> str:
         ]
         ys = [bottom - (value - low) / span * (bottom - top) for value in values]
         points = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
-        change = (values[-1] / values[0] - 1) * 100 if values[0] else 0.0
+        change = f"{(values[-1] / values[0] - 1) * 100:+.1f}%" if values[0] > 0 else "变化率不适用"
         series_title = "{} {}—{}".format(panel["label"], years[0], years[-1])
         elements.extend(
             [
@@ -462,7 +482,7 @@ def financial_chart(table: MarkdownTable | None) -> str:
                 f'<text x="0" y="{row_top + 24:.1f}" class="chart-name" fill="#171715" font-size="12" font-weight="650">{svg_text(panel["label"])}</text>',
                 f'<text x="0" y="{row_top + 44:.1f}" class="chart-range" fill="#77736B" font-size="9.5">{svg_text(format_value(values[0]))} → {svg_text(format_value(values[-1]))}</text>',
                 f'<circle cx="4" cy="{row_top + 62.5:.1f}" r="3" class="{css}" fill="{color}"/>',
-                f'<text x="12" y="{row_top + 66:.1f}" class="chart-delta" fill="#4E4B45" font-size="10" font-weight="700">{change:+.1f}%</text>',
+                f'<text x="12" y="{row_top + 66:.1f}" class="chart-delta" fill="#4E4B45" font-size="10" font-weight="700">{change}</text>',
                 f'<line x1="{chart_left:.1f}" y1="{bottom:.1f}" x2="{chart_right:.1f}" y2="{bottom:.1f}" class="chart-grid" stroke="#D5D0C6" stroke-width="1"/>',
                 f'<polyline points="{points}" class="{css}" fill="none" stroke="{color}" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter"><title>{svg_text(series_title)}</title></polyline>',
                 f'<circle cx="{xs[0]:.1f}" cy="{ys[0]:.1f}" r="2.8" class="chart-ring ring-{key.replace("_", "-")}" fill="#F8F6F0" stroke="{color}" stroke-width="1.7"><title>{svg_text(f"{years[0]} {format_value(values[0])}")}</title></circle>',
@@ -471,6 +491,12 @@ def financial_chart(table: MarkdownTable | None) -> str:
                 f'<text x="{chart_right:.1f}" y="{row_top + 94:.1f}" text-anchor="end" class="chart-tick" fill="#77736B" font-size="8.5">{svg_text(years[-1])}</text>',
             ]
         )
+        for year, value, x, y in zip(years[1:-1], values[1:-1], xs[1:-1], ys[1:-1]):
+            point_label = f"{year} {format_value(value)} {panel['unit']}"
+            elements.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.5" class="{css}" fill="{color}">'
+                f'<title>{svg_text(point_label)}</title></circle>'
+            )
         if panel_index < len(panels) - 1:
             elements.append(
                 f'<line x1="0" y1="{row_top + panel_height - 1:.1f}" x2="{width}" y2="{row_top + panel_height - 1:.1f}" class="chart-grid" stroke="#D5D0C6" stroke-width="1"/>'
@@ -480,15 +506,15 @@ def financial_chart(table: MarkdownTable | None) -> str:
     unit_text = " / ".join(units) if units else "单位见行标"
     return (
         '<figure class="evidence-figure" data-chart="financial-trends">'
-        f'<div class="figure-head"><figcaption class="figure-title">收入、盈利与现金流｜{svg_text(years[0])}—{svg_text(years[-1])}</figcaption>'
+        f'<div class="figure-head"><figcaption class="figure-title">核心财务轨迹</figcaption>'
         f'<span class="figure-meta">各指标独立量程 · {svg_text(unit_text)}</span></div>'
         + "".join(elements)
-        + '<p class="figure-note">小倍图比较各指标自身趋势，不用共享纵轴比较绝对规模；精确值见正文表格。</p></figure>'
+        + f'<p class="figure-note">{svg_text(years[0])}—{svg_text(years[-1])} · 点代表年度，百分比为首末年累计变化。各指标独立量程，精确值见正文表格。</p></figure>'
     )
 
 
 def scenario_chart(table: MarkdownTable | None, current_price: float | None) -> str:
-    """估值情景水平细条；单一冷蓝系列，朱砂虚线标现价，支持零基线下的负值。"""
+    """估值情景水平细条；单一冷蓝系列，蓝灰虚线标截止日价格，支持负值。"""
     if table is None:
         return ""
     value_index = next(
@@ -562,17 +588,19 @@ def scenario_chart(table: MarkdownTable | None, current_price: float | None) -> 
         x = x_at(current_price)
         elements.extend(
             [
-                f'<line x1="{x:.1f}" y1="27" x2="{x:.1f}" y2="204" class="chart-price-line" stroke="#C4472D" stroke-width="1.6" stroke-dasharray="3 3"/>',
-                f'<text x="{x:.1f}" y="18" text-anchor="middle" class="chart-price" fill="#C4472D" font-size="9" font-weight="700">现价 {current_price:.2f}</text>',
+                f'<line x1="{x:.1f}" y1="27" x2="{x:.1f}" y2="204" class="chart-price-line" stroke="#315868" stroke-width="1.6" stroke-dasharray="3 3"/>',
+                f'<text x="{x:.1f}" y="18" text-anchor="middle" class="chart-price" fill="#315868" font-size="9" font-weight="700">截止日 {current_price:.2f}</text>',
             ]
         )
     elements.append("</svg>")
     return (
         '<figure class="evidence-figure" data-chart="valuation-scenarios">'
-        '<div class="figure-head"><figcaption class="figure-title">估值情景与当前价格</figcaption>'
+        '<div class="figure-head"><figcaption class="figure-title">价格与假设的距离</figcaption>'
         '<span class="figure-meta">元/股 · HYPOTHESIZED</span></div>'
         + "".join(elements)
-        + '<p class="figure-note">情景展示假设敏感性，不是目标价或收益承诺；精确假设、计算 receipt 和反转条件见估值章节。</p></figure>'
+        + '<p class="figure-note">'
+        + ('虚线为报告截止日价格，' if current_price is not None else '未提供报告截止日价格；')
+        + '细条为假设情景。不是目标价或收益承诺；口径与计算见估值章节。</p></figure>'
     )
 
 
@@ -713,6 +741,7 @@ def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
     if len(year_indices) < 3:
         return None
     series_values: dict[str, list[float]] = {}
+    series_units: dict[str, str] = {}
     seen: set[str] = set()
     for row in table.rows:
         if not row:
@@ -724,8 +753,15 @@ def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
         if any(value is None for value in values):
             continue
         series_values[key] = [float(value) for value in values]
+        unit = UNIT_SUFFIX_RE.search(clean_markdown_text(row[0]))
+        series_units[key] = unit.group(1) if unit else ""
         seen.add(key)
     if "operating_cash" not in series_values or "capex_proxy" not in series_values:
+        return None
+    # Subtraction requires an explicit shared unit; unrelated rows (e.g. EPS)
+    # must not supply the unit for these two monetary series.
+    cash_unit = series_units["operating_cash"]
+    if not cash_unit or cash_unit != series_units["capex_proxy"]:
         return None
     operating = series_values["operating_cash"]
     capex = series_values["capex_proxy"]
@@ -809,24 +845,10 @@ def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
     return (
         '<figure class="evidence-figure" data-chart="cash-flow-structure">'
         '<div class="figure-head"><figcaption class="figure-title">现金流结构｜经营、开支与留存</figcaption>'
-        f'<span class="figure-meta">{svg_text(unit_hint(table))} · FCF 代理 = 经营 − 开支</span></div>'
+        f'<span class="figure-meta">{svg_text(cash_unit)} · FCF 代理 = 经营 − 开支</span></div>'
         + "".join(elements)
         + '<p class="figure-note">FCF 代理值由已披露两行相减派生（<span class="evidence-state" data-state="INFERRED">INFERRED</span>），非会计准则自由现金流；虚线即派生序列。</p></figure>'
     )
-
-
-def unit_hint(table: MarkdownTable) -> str:
-    """从已注册实体行标提取单位后缀（如「亿元」），供图注展示。"""
-    units: set[str] = set()
-    for row in table.rows:
-        if not row:
-            continue
-        if match_series_key(clean_markdown_text(row[0])) is None:
-            continue
-        unit_match = UNIT_SUFFIX_RE.search(clean_markdown_text(row[0]))
-        if unit_match:
-            units.add(unit_match.group(1))
-    return " / ".join(sorted(units)) if units else "单位见行标"
 
 
 def falsification_rows(tables: list[MarkdownTable]) -> list[tuple[str, str, str]] | None:
@@ -1056,7 +1078,7 @@ def decorate_headings(rendered: str) -> tuple[str, list[tuple[str, str]]]:
         )
         return (
             f'<h2 id="{html.escape(section_id, quote=True)}"{section_kind}>'
-            f'<span class="section-index">{len(headings):02d}</span><span>{match.group(2)}</span></h2>'
+            f'<span class="section-index">{len(headings):02d}</span> <span>{match.group(2)}</span></h2>'
         )
 
     return H2_RE.sub(replace, rendered), headings
@@ -1073,14 +1095,14 @@ def build_masthead(parsed: ParsedReport, revision: dict[str, Any] | None) -> str
     return f'''<header class="report-masthead">
   <div class="brand-lockup">
     <span class="brand-name"><b>Money</b><b>Craft</b></span>
-    <span class="brand-subtitle">独立基本面研究<br>Independent fundamental research</span>
+    <span class="brand-subtitle">投资研究 · 长期视角</span>
   </div>
   <div class="masthead-tools">
     <dl class="masthead-meta">
       <div><dt>证券</dt><dd>{html.escape(identity)}</dd></div>
-      <div><dt>研究日</dt><dd>{html.escape(report_date(parsed))}</dd></div>
-      <div><dt>数据截止</dt><dd>{html.escape(data_cutoff(parsed))}</dd></div>
-      <div><dt>版本</dt><dd>{html.escape(str(revision_id or "UNSEALED"))}</dd></div>
+      <div><dt>研究日</dt><dd><time data-report-date>{html.escape(report_date(parsed))}</time></dd></div>
+      <div><dt>数据截止</dt><dd><time data-data-cutoff>{html.escape(data_cutoff(parsed))}</time></dd></div>
+      <div><dt>版本</dt><dd>{html.escape(str(revision_id or "阅读预览 · 未封存"))}</dd></div>
     </dl>
     <button class="theme-toggle" type="button" data-theme-toggle aria-pressed="false"><span>夜间阅读</span></button>
   </div>
@@ -1094,8 +1116,8 @@ def build_navigation(headings: list[tuple[str, str]]) -> str:
         for index, (section_id, title) in enumerate(headings, start=1)
     )
     return f'''<nav class="section-nav" aria-label="报告章节" data-section-nav>
-  <div class="section-nav-head"><span class="nav-eyebrow">研究目录</span><button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false"><span data-nav-toggle-label>浏览 {len(headings)} 个章节</span></button></div>
-  <ol data-nav-list>{items}</ol>
+  <div class="section-nav-head"><span class="nav-eyebrow">阅读索引</span><button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="report-sections"><span data-nav-toggle-label>浏览 {len(headings)} 个章节</span></button></div>
+  <ol id="report-sections" data-nav-list>{items}</ol>
 </nav>'''
 
 
@@ -1108,23 +1130,23 @@ def build_decision_brief(parsed: ParsedReport) -> str:
             f'<dd class="metric-note">{html.escape(item["note"])}</dd>'
             "</div>"
         )
-        for item in metric_items(parsed)
+        for item in metric_items(parsed) if item["value"] not in {"见正文", "见估值", "待复核"}
     )
     verdict = report_verdict(parsed)
+    rating = (
+        f'<p class="decision-rating" data-verdict="{html.escape(verdict)}">研究判断 · '
+        f'{html.escape(verdict_label(verdict))}</p>' if verdict != "REVIEW" else ""
+    )
     return f'''<section class="decision-brief" aria-labelledby="report-title">
   <div class="decision-grid">
     <div class="decision-title-block">
       <p class="decision-kicker"><span>公司研究</span><span>{html.escape(report_identity(parsed))}</span><span>{html.escape(latest_period(parsed))}</span></p>
-      <h1 id="report-title"><span>{html.escape(display_company_name(parsed))}</span><small>基本面研究</small></h1>
+      <h1 id="report-title"><span>{html.escape(display_company_name(parsed))}</span></h1>
+      <p class="report-subtitle">基本面研究</p>
+      {rating}
     </div>
-    <aside class="decision-rating" data-verdict="{html.escape(verdict)}" aria-label="当前研究判断">
-      <span class="rating-label">当前研究判断</span>
-      <strong>{html.escape(verdict_label(verdict))}</strong>
-      <span class="rating-code">{html.escape(verdict)}</span>
-    </aside>
+    <dl class="metric-strip" aria-label="正文已披露指标">{metrics}</dl>
   </div>
-  <div class="decision-thesis"><span class="thesis-label">核心命题</span><p class="decision-statement">{html.escape(conclusion_text(parsed))}</p></div>
-  <dl class="metric-strip" aria-label="核心指标">{metrics}</dl>
 </section>'''
 
 
@@ -1239,6 +1261,16 @@ def build_document(
     rendered = decorate_text_nodes(rendered)
     rendered = wrap_tables(rendered)
     rendered, headings = decorate_headings(rendered)
+    # Keep the entire opening conclusion, including citations, exactly once.
+    # Its place is before the data spread; subsequent sections retain their order.
+    lead = ""
+    conclusion = (
+        re.match(r'(<h2\b[^>]*>.*?</h2>.*?)(?=<h2\b|\Z)', rendered, re.DOTALL)
+        if headings and headings[0][1] == "结论" else None
+    )
+    if conclusion:
+        lead = conclusion.group(1)
+        rendered = rendered[conclusion.end():]
     tables = parse_markdown_tables(parsed.markdown_body)
     visual_parts: list[str] = []
     if charts:
@@ -1278,6 +1310,7 @@ def build_document(
             "MASTHEAD": build_masthead(parsed, revision),
             "NAVIGATION": build_navigation(headings),
             "DECISION_BRIEF": build_decision_brief(parsed),
+            "LEAD": lead,
             "VISUAL_SUMMARY": visual_summary,
             "VISUAL_EXTENDED": visual_extended,
             "ARTICLE": rendered,
@@ -1290,7 +1323,9 @@ def build_document(
     return document, len(visual_parts)
 
 
-def verify_html_text(document: str, *, source_sha256: str | None = None) -> dict[str, Any]:
+def verify_html_text(
+    document: str, *, source_sha256: str | None = None, expected_report: ParsedReport | None = None,
+) -> dict[str, Any]:
     errors: list[str] = []
     if '<meta name="offline-portable" content="true">' not in document:
         errors.append("HTML does not declare offline portability")
@@ -1311,6 +1346,12 @@ def verify_html_text(document: str, *, source_sha256: str | None = None) -> dict
     )
     if source_sha256 and embedded_hash != source_sha256:
         errors.append("HTML source hash does not match canonical Markdown")
+    if expected_report is not None:
+        for attribute, expected in (("data-report-date", report_date(expected_report)),
+                                    ("data-data-cutoff", data_cutoff(expected_report))):
+            observed = re.search(rf'<time\s+{attribute}>(.*?)</time>', document)
+            if expected != "UNSPECIFIED" and (observed is None or html.unescape(observed.group(1)) != expected):
+                errors.append(f"HTML {attribute} does not match canonical Markdown")
     return {
         "schema": VERIFY_SCHEMA,
         "valid": not errors,
@@ -1405,7 +1446,7 @@ def render_report(
         archive_manifest=archive_payload,
         charts=charts,
     )
-    verification = verify_html_text(document, source_sha256=source_sha_before)
+    verification = verify_html_text(document, source_sha256=source_sha_before, expected_report=parsed)
     if not verification["valid"]:
         raise ReportRenderError(f"portable HTML verification failed: {verification['errors']}")
 
@@ -1498,7 +1539,8 @@ def verify_rendered_report(source: Path, html_path: Path, pdf_path: Path | None)
         html_result = None
     else:
         html_result = verify_html_text(
-            html_path.read_text(encoding="utf-8"), source_sha256=source_sha
+            html_path.read_text(encoding="utf-8"), source_sha256=source_sha,
+            expected_report=parse_report(source.read_text(encoding="utf-8")) if source.is_file() else None,
         )
         errors.extend(html_result["errors"])
     pages = None

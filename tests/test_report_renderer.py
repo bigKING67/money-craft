@@ -110,6 +110,63 @@ EXTENDED_REPORT = """> 研究日期：2026-08-24
 
 
 class ReportRendererTests(unittest.TestCase):
+    def test_canonical_frontmatter_dates_survive_rendering(self) -> None:
+        source = (ROOT / 'artifacts/acceptance/600519/report.md').read_text(encoding='utf-8')
+        parsed = report_renderer.parse_report(source)
+        self.assertEqual(parsed.metadata['as_of'], '2026-08-23')
+        self.assertEqual(report_renderer.report_date(parsed), '2026-08-23')
+        self.assertEqual(report_renderer.data_cutoff(parsed), '2026-08-23T19:40:16+08:00')
+        masthead = report_renderer.build_masthead(parsed, None)
+        result = report_renderer.verify_html_text(masthead, expected_report=parsed)
+        self.assertFalse(any('data-report-date' in e or 'data-data-cutoff' in e for e in result['errors']))
+        broken = masthead.replace('2026-08-23', 'UNSPECIFIED')
+        errors = report_renderer.verify_html_text(broken, expected_report=parsed)['errors']
+        self.assertTrue(any('data-report-date' in e for e in errors))
+        self.assertTrue(any('data-data-cutoff' in e for e in errors))
+
+    def test_thousands_price_and_ttm_pe_keep_the_disclosed_basis(self) -> None:
+        source = (ROOT / 'artifacts/acceptance/600519/report.md').read_text(encoding='utf-8')
+        parsed = report_renderer.parse_report(source)
+        self.assertEqual(report_renderer.current_price(parsed), 1272.83)
+        self.assertEqual(report_renderer.metric_items(parsed)[1]['label'], 'PE · TTM')
+        self.assertEqual(report_renderer.metric_items(parsed)[1]['value'], '19.539×')
+        brief = report_renderer.build_decision_brief(parsed)
+        self.assertNotIn('待复核', brief)
+        self.assertNotIn('见正文', brief)
+        self.assertNotIn('静态 PE', brief)
+
+    def test_year_rows_and_year_columns_produce_equivalent_trends(self) -> None:
+        table = report_renderer.MarkdownTable(
+            headers=('年度', '营业收入（亿元）', '归母净利润（亿元）'),
+            rows=(('2023', '100', '10'), ('2024', '110', '12'), ('2025', '120', '11')),
+        )
+        normalized = report_renderer.financial_trend_table([table])
+        expected = report_renderer.MarkdownTable(
+            headers=('指标', '2023', '2024', '2025'),
+            rows=(('营业收入（亿元）', '100', '110', '120'), ('归母净利润（亿元）', '10', '12', '11')),
+        )
+        self.assertEqual(normalized, expected)
+        self.assertEqual(report_renderer.financial_chart(normalized), report_renderer.financial_chart(expected))
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package unavailable")
+    def test_acceptance_reading_order_preserves_conclusion_and_citations_once(self) -> None:
+        source = (ROOT / 'artifacts/acceptance/600519/report.md').read_text(encoding='utf-8')
+        parsed = report_renderer.parse_report(source)
+        document, chart_count = report_renderer.build_document(
+            parsed, 'a' * 64, template=report_renderer.DEFAULT_TEMPLATE.read_text(encoding='utf-8'),
+            style='', script='', audit=None, evidence=None, revision=None,
+            archive_manifest=None, charts=True,
+        )
+        self.assertEqual(chart_count, 2)
+        self.assertEqual(document.count('贵州茅台仍具备极强品牌'), 2)  # description + one visible paragraph
+        article = document.split('<article class="report-article">', 1)[1].split('</article>', 1)[0]
+        self.assertEqual(article.count('贵州茅台仍具备极强品牌'), 1)
+        self.assertIn('[S08]', article.split('visual-summary', 1)[0])
+        self.assertIn('data-chart="financial-trends"', article)
+        self.assertIn('截止日 1272.83', article)
+        self.assertNotIn('UNSPECIFIED', document)
+        self.assertTrue(report_renderer.verify_html_text(document, expected_report=parsed)['valid'])
+
     def test_parse_removes_legacy_style_and_preamble(self) -> None:
         parsed = report_renderer.parse_report(SAMPLE_REPORT)
         self.assertEqual(parsed.title, "示例公司（600000.SH）基本面研究")
@@ -140,7 +197,10 @@ class ReportRendererTests(unittest.TestCase):
         self.assertIn("经营现金流", financial)
         self.assertNotIn("基本每股收益", financial)
         self.assertNotIn("资本开支代理项", financial)
-        self.assertIn("现价 84.30", scenario)
+        self.assertIn("截止日 84.30", scenario)
+        without_price = report_renderer.scenario_chart(report_renderer.scenario_table(tables), None)
+        self.assertIn("未提供报告截止日价格", without_price)
+        self.assertNotIn("虚线为报告截止日价格", without_price)
         self.assertNotIn("<script", financial + scenario)
 
         chinese = SAMPLE_REPORT.replace("| Bear |", "| 悲观 |").replace(
@@ -228,8 +288,10 @@ class ReportRendererTests(unittest.TestCase):
         template = report_renderer.DEFAULT_TEMPLATE.read_text(encoding="utf-8")
         summary_at = template.index("{{VISUAL_SUMMARY}}")
         article_at = template.index("{{ARTICLE}}")
+        lead_at = template.index("{{LEAD}}")
         extended_at = template.index("{{VISUAL_EXTENDED}}")
         self.assertLess(summary_at, article_at)
+        self.assertLess(lead_at, summary_at)
         self.assertLess(article_at, extended_at)
 
     def test_audit_seal_uses_reader_chinese(self) -> None:
@@ -288,6 +350,8 @@ class ReportRendererTests(unittest.TestCase):
         self.assertIn("INFERRED", cash_flow)
         # FCF 代理 = 经营 − 开支：2025 年 14 - 10 = 4，必须出现在派生序列 title 中
         self.assertIn("FCF 代理 2025 4", cash_flow)
+        self.assertIn('figure-meta">亿元 · FCF', cash_flow)
+        self.assertNotIn("亿元 / 元", cash_flow)
 
         rows = report_renderer.falsification_rows(tables)
         self.assertEqual(
@@ -320,6 +384,15 @@ class ReportRendererTests(unittest.TestCase):
             )
         )
 
+    def test_cash_flow_derivation_requires_explicit_matching_units(self) -> None:
+        for label in ("资本开支代理项（万元）", "资本开支代理项"):
+            with self.subTest(label=label):
+                source = EXTENDED_REPORT.replace("资本开支代理项（亿元）", label)
+                tables = report_renderer.parse_markdown_tables(source)
+                self.assertIsNone(report_renderer.cash_flow_structure_chart(
+                    report_renderer.financial_trend_table(tables)
+                ))
+
     @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package unavailable")
     def test_build_document_splits_primary_and_extended_views(self) -> None:
         parsed = report_renderer.parse_report(EXTENDED_REPORT)
@@ -342,10 +415,10 @@ class ReportRendererTests(unittest.TestCase):
         main_start = document.index('<main id="report-content"')
         main_end = document.index("</main>")
         self.assertLess(main_start, summary_start)
-        self.assertLess(summary_start, article_start)
+        self.assertLess(article_start, summary_start)
         self.assertLess(article_start, extended_start)
         self.assertLess(extended_start, main_end)
-        primary = document[summary_start:article_start]
+        primary = document[summary_start:document.index('</section>', summary_start)]
         extended = document[extended_start:main_end]
         self.assertEqual(primary.count("<figure"), 2)
         self.assertIn("financial-trends", primary)
@@ -373,7 +446,7 @@ class ReportRendererTests(unittest.TestCase):
         summary_start = document.index('<section class="visual-summary"')
         article_start = document.index('<article class="report-article"')
         extended_start = document.index('<section class="visual-extended"')
-        primary = document[summary_start:article_start]
+        primary = document[summary_start:document.index('</section>', summary_start)]
         extended = document[extended_start:]
         self.assertEqual(primary.count("<figure"), 1)
         self.assertIn('data-chart="valuation-scenarios"', primary)

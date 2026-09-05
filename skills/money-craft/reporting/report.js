@@ -20,15 +20,24 @@
   }
 
   if (nav && navToggle) {
+    const closeNav = () => {
+      nav.classList.remove('is-open');
+      navToggle.setAttribute('aria-expanded', 'false');
+    };
     navToggle.addEventListener('click', () => {
       const open = nav.classList.toggle('is-open');
       navToggle.setAttribute('aria-expanded', String(open));
     });
     links.forEach((link) => {
       link.addEventListener('click', () => {
-        nav.classList.remove('is-open');
-        navToggle.setAttribute('aria-expanded', 'false');
+        closeNav();
       });
+    });
+    nav.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && nav.classList.contains('is-open')) {
+        closeNav();
+        navToggle.focus();
+      }
     });
   }
 
@@ -43,7 +52,8 @@
     }
     links.forEach((link) => {
       const active = current && link.getAttribute('href') === `#${current.id}`;
-      link.toggleAttribute('aria-current', Boolean(active));
+      if (active) link.setAttribute('aria-current', 'location');
+      else link.removeAttribute('aria-current');
       if (active && navToggleLabel) {
         navToggleLabel.textContent = `目录 · ${link.textContent.trim()}`;
       }
@@ -60,6 +70,7 @@
     });
   };
 
+  root.classList.add('js');
   update();
   document.addEventListener('scroll', scheduleUpdate, { passive: true });
   window.addEventListener('resize', scheduleUpdate, { passive: true });
