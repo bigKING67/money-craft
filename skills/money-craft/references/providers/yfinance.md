@@ -21,6 +21,8 @@ python3 -m venv "$MONEY_CRAFT_DATA_HOME/venvs/data"
 
 不要因为当前宿主的系统 Python 未安装 yfinance 就改写全局环境；使用同一专用解释器执行 `research plan/init/collect`。`doctor` 只检查包是否可导入和版本，不联网。
 
+系统 `python3` 启动 Money Craft 主入口时，只要首选数据环境存在，入口会透明切换到 `~/.local/share/money-craft/venvs/data/bin/python`；在报告 venv 或其他显式受控解释器中运行时不会抢占解释器。旧 `~/.config/money-craft/data-venv/bin/python` 仅在新环境不存在且未显式覆盖数据根时作为迁移兼容回退。可用 `MONEY_CRAFT_DATA_HOME`、`XDG_DATA_HOME` 或 `MONEY_CRAFT_DATA_PYTHON` 选择受控位置，不要恢复 cwd 搜索或全局安装。共享 XDG、显式 dotenv、Provider gap 和当前来源边界见 [财务数据与证据](../financial-data-and-evidence.md)。
+
 ## 身份映射
 
 Money Craft 的 `security_id` 仍是研究身份真源，Yahoo symbol 只是 Provider identifier：

@@ -11,6 +11,12 @@
 
 宏观 capture 还必须保存 series id、标题、原来源、单位、频率、季调、观测区间、变换代码、抓取时间和 real-time/as-known-on 日期。观测日期不等于发布日期；`.` 是缺失值而不是零。历史研究和回测默认使用 ALFRED vintage，只有讨论“今天最新修订后的历史”时才使用未指定 as-known-on 的 FRED mode。
 
+## Provider 运行与凭据边界
+
+配置、持久运行数据和缓存默认分别位于 `~/.config/money-craft`、`~/.local/share/money-craft`、`~/.cache/money-craft`。`MONEY_CRAFT_CONFIG_HOME`、`MONEY_CRAFT_DATA_HOME`、`MONEY_CRAFT_CACHE_HOME` 或对应 XDG 变量可覆盖各自路径，且覆盖值必须是绝对路径。源码开发只能用 `MONEY_CRAFT_ENV_FILE` 显式选择由当前用户拥有且权限受限的 dotenv 文件；运行时不搜索 cwd 或父目录。各 Provider 的 key 位置、解释器和依赖要求仍以对应 Provider reference 为准。
+
+不得将 key 放进命令行、完整请求 URL、capture、错误文本、报告或 Git。Provider 缺失、依赖缺失、限流或目标不受支持时形成可见 `PROVIDER_GAP`；没有适用于结论的当前正式或可追溯来源时，停止事实型判断，不能用缓存或模型记忆补齐。
+
 ## 口径与差异
 
 比较前必须统一 `security_id`/share class、财政报告期、真实期末日、会计准则、合并范围、币种、单位和累计/单季口径。差异率：

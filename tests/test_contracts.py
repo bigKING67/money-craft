@@ -103,6 +103,19 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("`industry/theme + alpha`", routing)
         self.assertIn("security_id", routing)
 
+    def test_entrypoint_defers_mode_specific_operations_to_routed_references(self) -> None:
+        skill = (ROOT / "skills/money-craft/SKILL.md").read_text(encoding="utf-8")
+        research = (ROOT / "skills/money-craft/references/company-research.md").read_text(encoding="utf-8")
+        provider = (ROOT / "skills/money-craft/references/providers/yfinance.md").read_text(encoding="utf-8")
+        rendering = (ROOT / "skills/money-craft/references/report-rendering.md").read_text(encoding="utf-8")
+        tracking = (ROOT / "skills/money-craft/references/tracking-workflow.md").read_text(encoding="utf-8")
+        self.assertIn("不要读取完整公司研究运行合同", skill)
+        self.assertNotIn('scripts/money_craft.py" research init', skill)
+        self.assertIn('scripts/money_craft.py" research init', research)
+        self.assertIn("迁移兼容回退", provider)
+        self.assertIn("report render", rendering)
+        self.assertIn("track init", tracking)
+
     def test_upstream_categories_preserve_unicode_paths(self) -> None:
         self.assertEqual(upstream_status.category("reports/快手/赔率表.md"), "excluded-content")
         self.assertEqual(upstream_status.category("实盘记录/卖出条件.md"), "excluded-content")

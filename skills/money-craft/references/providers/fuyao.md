@@ -19,6 +19,8 @@ Money Craft v0.3 只把下表中与证据优先基本面研究直接相关的有
 
 Money Craft v0.3 使用固定 HTTPS Base URL `https://fuyao.aicubes.cn`，通过请求头 `X-api-key` 鉴权。该 Provider 的覆盖范围不定义 Money Craft 的全球产品边界。运行时优先读取环境变量 `FUYAO_API_KEY`，否则读取权限必须为 `0600` 或更严格的 `~/.config/money-craft/fuyao-api-key`。密钥文件必须由当前用户拥有、必须是普通文件且不能是符号链接。没有命令行 key 参数或可覆盖的生产 base URL。
 
+共享 XDG 路径、显式 dotenv、Provider gap 和当前来源边界见 [财务数据与证据](../financial-data-and-evidence.md)。`doctor --json` 不联网、不创建目录。
+
 ## 支持的 REST 能力
 
 | CLI | REST 路径 | 关键约束 |

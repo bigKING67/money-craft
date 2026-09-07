@@ -16,7 +16,7 @@ FRED 用于宏观、利率、通胀、就业、增长、流动性和信用环境
 
 ## 凭据与运行边界
 
-每个请求都需要 32 位小写字母数字 API key。运行时依次读取 `FRED_API_KEY` 和权限为 `0600` 或更严格的 `~/.config/money-craft/fred-api-key`；密钥文件必须由当前用户拥有、是普通文件且不能是符号链接。FRED 把 key 放在查询参数中，因此客户端不得记录完整请求 URL、把 key 写进 capture、错误文本、报告或 shell 参数。
+每个请求都需要 32 位小写字母数字 API key。运行时依次读取 `FRED_API_KEY` 和权限为 `0600` 或更严格的 `~/.config/money-craft/fred-api-key`；密钥文件必须由当前用户拥有、是普通文件且不能是符号链接。配置路径可由绝对 `MONEY_CRAFT_CONFIG_HOME` 或 `XDG_CONFIG_HOME` 覆盖；持久数据与缓存分别可由绝对 `MONEY_CRAFT_DATA_HOME`/`XDG_DATA_HOME` 和 `MONEY_CRAFT_CACHE_HOME`/`XDG_CACHE_HOME` 覆盖。源码开发只能用 `MONEY_CRAFT_ENV_FILE` 显式选择权限受限的 dotenv 文件，运行时不搜索 cwd 或父目录。FRED 把 key 放在查询参数中，因此客户端不得记录完整请求 URL、把 key 写进 capture、错误文本、报告或 shell 参数。
 
 如果 key 曾出现在聊天、截图、日志或命令历史中，先在 FRED Account 撤销并创建新 key，再通过无回显输入保存：
 
@@ -84,4 +84,4 @@ series id 只是入口。任何正式使用都先读取 `data series` 元数据�
 
 FRED 汇集许多来源，部分 series 由第三方拥有并带有版权或使用限制；FRED API 的可访问性不覆盖原数据所有者的权利。正式报告保留 series 元数据、原来源/notes、抓取时间、查询口径和 capture 哈希，不批量再分发原始数据集。
 
-官方条款没有承诺固定不变的速率上限，只说明可能限流和调整额度。客户端对 `429`、`5xx` 和短暂网络错误最多尝试三次，尊重并限制 `Retry-After`；仍失败就形成 `PROVIDER_GAP`，不能用旧值或模型记忆补齐。
+官方条款没有承诺固定不变的速率上限，只说明可能限流和调整额度。客户端对 `429`、`5xx` 和短暂网络错误最多尝试三次，尊重并限制 `Retry-After`；仍失败就形成 `PROVIDER_GAP`，不能用旧值或模型记忆补齐。没有适用于结论的当前正式或可追溯来源时停止事实型判断；FRED 的可用性不能替代公司正式披露。

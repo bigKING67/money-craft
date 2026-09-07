@@ -9,11 +9,38 @@
 - 最新正式报告、年度报告、交易所或公司 IR 三类必需一手证据，以及按重要性触发的重大事项、管理层问答和期后事项来源槽位；
 - report、thesis、financial reconciliation、metadata-only evidence manifest 和五项 audit artifact 合同。
 
+先把包含 Skill 的目录解析为绝对路径 `MONEY_CRAFT_SKILL_DIR`，再运行：
+
+```bash
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research plan \
+  --security <公司全称> --security-id <MARKET:SYMBOL> --base-currency <USD|HKD|CNY|...> \
+  --as-of <YYYY-MM-DD> --latest-report <YYYY-1..4> --latest-report-end <YYYY-MM-DD> \
+  --latest-annual-report <YYYY-4> \
+  --provider <auto|fuyao|yfinance> --provider-mode <auto|required|disabled> --json
+```
+
 `research plan` 是可重复的执行规格，不是研究结果。它不访问网络，不证明 Provider 数据存在，也不能替代实际来源捕获、计算和审计。
 
 ## 可恢复研究运行
 
 需要落地研究时，使用 `research init` 将 plan 固化到本地 workspace。`case.json` 必须由 `plan.json` 自动派生；不得另写一份 Provider 操作列表。workspace 的状态真源包括不可变 plan、派生 case、append-only `run-state.json`、私有 `evidence/`、报告、论文、审计和完成收据。
+
+```bash
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research init \
+  --security <公司全称> --security-id <MARKET:SYMBOL> --base-currency <三字母币种> \
+  --as-of <YYYY-MM-DD> --latest-report <YYYY-1..4> --latest-report-end <YYYY-MM-DD> \
+  --latest-annual-report <YYYY-4> \
+  --provider <auto|fuyao|yfinance> --provider-mode <auto|required|disabled> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research collect \
+  --workspace <init返回的workspace> --resume --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research import-official \
+  --workspace <init返回的workspace> --source-id <S11|S12|S13|S18|S19|S20> \
+  --file <正式来源文件> --url <HTTPS正式来源> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research status \
+  --workspace <init返回的workspace> --json
+python3 "$MONEY_CRAFT_SKILL_DIR/scripts/money_craft.py" research finalize \
+  --workspace <init返回的workspace> --json
+```
 
 1. `research collect --resume` 只在 case 含 Provider 操作时执行有界采集，已有 normalized response 和 capture 不覆盖；无适配器时不要调用 `collect`，直接导入正式来源。单项失败形成显式 Provider gap，并返回非零结果。
 2. `research import-official` 逐项导入 plan 声明的 `S11/S12/S13`；当重大交易或资本事项、官方问答、报告期后事项影响结论时，再分别导入 `S18/S19/S20`。命令校验 PDF/HTML、HTTPS 来源、大小和 SHA-256，不负责联网下载。
