@@ -321,12 +321,12 @@ h2[data-section-kind="sources"] ~ ul > li { border-bottom: 1px solid var(--line)
   .report-main { padding: 0; }
   .decision-brief { padding: 7mm 0 5mm; }
   .decision-grid { display: table; table-layout: fixed; width: 100%; }
-  .decision-title-block { display: table-cell; width: 54%; vertical-align: bottom; }
+  .decision-title-block { display: table-cell; width: 70%; vertical-align: bottom; }
   .decision-kicker { margin-bottom: 2.5mm; font-size: 7pt; }
-  h1 { font-size: 28pt; }
+  h1 { font-size: 24pt; }
   .report-subtitle { font-size: 9pt; margin-top: 1mm; }
   .decision-rating { font-size: 8pt; }
-  .metric-strip { display: table-cell; width: 46%; vertical-align: bottom; text-align: right; margin: 0; }
+  .metric-strip { display: table-cell; width: 30%; vertical-align: bottom; text-align: right; margin: 0; }
   .metric { display: inline-block; min-width: 0; padding-left: 3mm; margin-left: 3mm; text-align: left; }
   .metric-label, .metric-note { font-size: 6.8pt; }
   .metric-value { font-size: 17pt; }

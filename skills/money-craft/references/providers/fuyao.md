@@ -47,3 +47,5 @@ Fuyao 原始响应、规范化完整响应、capture receipt 和批量缓存只�
 ## MCP
 
 Fuyao 还提供 `/mcp/a-share`、`/mcp/a-share-index`、`/mcp/fund` 和 `/mcp/meta`。Money Craft 不默认生成 MCP 配置，以避免宿主差异和密钥散落；只有用户明确要求并接受对应宿主配置边界时再单独配置。
+
+前瞻案例的实际核验提示：本次 `financials.income` 的 `period=quarterly` Q2/Q3 数字与财报累计栏一致，不能只据频率标签解释为单季。`report_date_ms` 也可能反映后续披露中的旧期比较值；历史报告期不等于历史可得快照。使用前瞻交叉核验入口时，明确累计口径、核对报告日期并保留本次抓取时间；该观察不代替所有标的/接口的字段核验。

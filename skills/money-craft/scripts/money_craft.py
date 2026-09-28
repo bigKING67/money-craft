@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import http.client
+import math
 import importlib.util
 import json
 import os
@@ -21,12 +23,17 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 import fred_adapter
+import earnings_update
+import earnings_baseline
+import earnings_crosscheck
+import earnings_drivers
+import portfolio_audit
 import research_run
 import report_renderer
 import runtime_paths
@@ -108,13 +115,69 @@ class FuyaoCredential:
     capture_label: str
 
 
+class _BoundedRedirectBody:
+    """Constrain urllib's redirect drain while retaining its redirect policy."""
+
+    def __init__(self, stream: Any) -> None:
+        self.stream = stream
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.stream, name)
+
+    def close(self) -> None:
+        try:
+            self.stream.close()
+        except OSError as exc:
+            raise MoneyCraftError("local_io_error", "redirect response cleanup failed", exit_code=EXIT_PROVIDER) from exc
+
+    def read(self, size: int = -1) -> bytes:
+        if getattr(self.stream, "closed", False):
+            return b""
+        data = self.stream.read(MAX_RESPONSE_BYTES + 1 if size < 0 else min(size, MAX_RESPONSE_BYTES + 1))
+        if len(data) > MAX_RESPONSE_BYTES:
+            raise MoneyCraftError("response_too_large", "provider redirect response exceeds byte limit", exit_code=EXIT_SCHEMA)
+        if size < 0:
+            length = getattr(self.stream, "headers", {}).get("Content-Length")
+            if length is not None:
+                try:
+                    expected = int(length)
+                except ValueError as exc:
+                    raise MoneyCraftError("malformed_response", "provider redirect Content-Length is invalid", exit_code=EXIT_SCHEMA) from exc
+                if expected < 0 or len(data) > expected:
+                    raise MoneyCraftError("malformed_response", "provider redirect length contradicts Content-Length", exit_code=EXIT_SCHEMA)
+                if len(data) < expected:
+                    raise http.client.IncompleteRead(data, expected - len(data))
+        return data
+
+
 class SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Do not forward the API key to a different redirect host."""
 
+    def http_error_302(self, req: Any, fp: Any, code: int, msg: str, headers: Any) -> Any:
+        try:
+            return super().http_error_302(req, _BoundedRedirectBody(fp), code, msg, headers)
+        finally:
+            active_error = sys.exc_info()[1]
+            try:
+                fp.close()
+            except OSError as exc:
+                if isinstance(active_error, urllib.error.HTTPError):
+                    active_error.msg = f"{active_error.reason} (response cleanup failed)"
+                elif isinstance(active_error, MoneyCraftError):
+                    active_error.args = (f"{active_error} (response cleanup failed)",)
+                elif active_error is None:
+                    raise MoneyCraftError("local_io_error", "redirect response cleanup failed", exit_code=EXIT_PROVIDER) from exc
+                # An existing transport exception retains its classification;
+                # cleanup details must never replace it.
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
     def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
-        old_host = urllib.parse.urlsplit(req.full_url).netloc.lower()
-        new_host = urllib.parse.urlsplit(newurl).netloc.lower()
-        if old_host != new_host:
+        original = urllib.parse.urlsplit(req.full_url)
+        target = urllib.parse.urlsplit(newurl)
+        if (original.scheme not in ("https", "http") or target.scheme != original.scheme
+                or original.netloc.lower() != target.netloc.lower()
+                or target.username is not None or target.password is not None):
             raise urllib.error.HTTPError(newurl, code, "cross-host redirect rejected", headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -140,11 +203,11 @@ def print_json(payload: Any) -> None:
 
 
 def sanitize_message(message: Any, secrets: tuple[str, ...] = ()) -> str:
-    cleaned = str(message).replace("\r", " ").replace("\n", " ")[:500]
+    cleaned = str(message)
     for secret in secrets:
         if secret:
             cleaned = cleaned.replace(secret, "[REDACTED]")
-    return cleaned
+    return cleaned.replace("\r", " ").replace("\n", " ")[:500]
 
 
 def fuyao_api_key_path(
@@ -161,6 +224,12 @@ def fuyao_api_key_path(
         ) from exc
 
 
+def validate_fuyao_key(value: str) -> str:
+    if any(ord(character) < 32 or 127 <= ord(character) <= 159 or ord(character) > 255 for character in value):
+        raise MoneyCraftError("invalid_configuration", "Fuyao API key is not a valid HTTP header value", exit_code=EXIT_CONFIG)
+    return value
+
+
 def load_fuyao_credential(
     environment: Mapping[str, str] | None = None,
     *,
@@ -170,7 +239,7 @@ def load_fuyao_credential(
     environment_value = environ.get(API_KEY_ENV, "").strip()
     if environment_value:
         return FuyaoCredential(
-            api_key=environment_value,
+            api_key=validate_fuyao_key(environment_value),
             source="environment",
             capture_label=f"environment:{API_KEY_ENV}",
         )
@@ -185,6 +254,8 @@ def load_fuyao_credential(
             f"configure {API_KEY_ENV} or {path_display}",
             exit_code=EXIT_CONFIG,
         ) from exc
+    except OSError as exc:
+        raise MoneyCraftError("invalid_configuration", f"cannot inspect {path_display}", exit_code=EXIT_CONFIG) from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise MoneyCraftError(
             "invalid_configuration",
@@ -210,11 +281,23 @@ def load_fuyao_credential(
             exit_code=EXIT_CONFIG,
         )
     try:
-        value = path.read_text(encoding="utf-8").strip()
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if ((opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or opened.st_uid != metadata.st_uid
+                    or stat.S_IMODE(opened.st_mode) & 0o077):
+                raise MoneyCraftError("invalid_configuration", f"{path_display} changed or is unsafe to read", exit_code=EXIT_CONFIG)
+            raw = stream.read(MAX_API_KEY_BYTES + 1)
+        if not 1 <= len(raw) <= MAX_API_KEY_BYTES:
+            raise MoneyCraftError("invalid_configuration", f"{path_display} has an invalid size", exit_code=EXIT_CONFIG)
+        value = raw.decode("utf-8").strip()
     except (OSError, UnicodeDecodeError) as exc:
         raise MoneyCraftError(
             "invalid_configuration",
-            f"cannot read {path_display}: {sanitize_message(exc)}",
+            f"cannot read {path_display}",
             exit_code=EXIT_CONFIG,
         ) from exc
     if not value or "\n" in value or "\r" in value:
@@ -224,24 +307,46 @@ def load_fuyao_credential(
             exit_code=EXIT_CONFIG,
         )
     return FuyaoCredential(
-        api_key=value,
+        api_key=validate_fuyao_key(value),
         source="secure-file",
         capture_label=f"secure-file:{path_display}",
     )
 
 
 def parse_json(raw: bytes) -> dict[str, Any]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
     try:
         text = raw.decode("utf-8")
         payload = json.loads(
             text,
             parse_float=Decimal,
+            object_pairs_hook=unique_object,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"invalid constant: {value}")),
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        # Escaped lone surrogates are accepted by json.loads but cannot be
+        # written to our UTF-8 capture or stdout contracts.
+        def validate_strings(value: Any) -> None:
+            if isinstance(value, str):
+                value.encode("utf-8")
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    validate_strings(key)
+                    validate_strings(item)
+            elif isinstance(value, list):
+                for item in value:
+                    validate_strings(item)
+        validate_strings(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, InvalidOperation, RecursionError) as exc:
         raise MoneyCraftError(
             "malformed_response",
-            f"provider response is not valid UTF-8 JSON: {exc}",
+            "provider response is not valid UTF-8 JSON",
             exit_code=EXIT_SCHEMA,
         ) from exc
     if not isinstance(payload, dict):
@@ -250,7 +355,7 @@ def parse_json(raw: bytes) -> dict[str, Any]:
             "provider response must be a JSON object",
             exit_code=EXIT_SCHEMA,
         )
-    if not isinstance(payload.get("code"), int):
+    if type(payload.get("code")) is not int:
         raise MoneyCraftError(
             "malformed_response",
             "provider response is missing integer code",
@@ -266,6 +371,12 @@ def parse_json(raw: bytes) -> dict[str, Any]:
         raise MoneyCraftError(
             "malformed_response",
             "provider message and request_id must be strings",
+            exit_code=EXIT_SCHEMA,
+        )
+    if payload["code"] == 0 and payload["data"] is None:
+        raise MoneyCraftError(
+            "malformed_response",
+            "successful provider response must contain a data object",
             exit_code=EXIT_SCHEMA,
         )
     if payload["data"] is not None and not isinstance(payload["data"], dict):
@@ -287,6 +398,8 @@ def bounded_retry_after(headers: Mapping[str, str] | None) -> float | None:
         seconds = float(value)
     except ValueError:
         return None
+    if not math.isfinite(seconds):
+        return None
     return max(0.0, min(seconds, 10.0))
 
 
@@ -305,7 +418,7 @@ class FuyaoClient:
                 f"{API_KEY_ENV} is not configured",
                 exit_code=EXIT_CONFIG,
             )
-        self._api_key = api_key.strip()
+        self._api_key = validate_fuyao_key(api_key.strip())
         self._base_url = base_url.rstrip("/")
         self._opener = opener or urllib.request.build_opener(SameHostRedirectHandler())
         self._sleeper = sleeper
@@ -357,7 +470,8 @@ class FuyaoClient:
         try:
             with self._opener.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                 content_length = response.headers.get("Content-Length")
-                if content_length:
+                declared_length = None
+                if content_length is not None:
                     try:
                         declared_length = int(content_length)
                     except ValueError as exc:
@@ -379,9 +493,20 @@ class FuyaoClient:
                         f"provider response exceeds {MAX_RESPONSE_BYTES} bytes",
                         exit_code=EXIT_SCHEMA,
                     )
+                if declared_length is not None and len(raw) != declared_length:
+                    if len(raw) < declared_length:
+                        raise http.client.IncompleteRead(raw, declared_length - len(raw))
+                    raise MoneyCraftError("malformed_response", "provider length contradicts Content-Length", exit_code=EXIT_SCHEMA)
         except urllib.error.HTTPError as exc:
+            close_failed = False
+            try:
+                exc.close()
+            except OSError:
+                close_failed = True
             retryable = exc.code == 429 or 500 <= exc.code <= 599
             message = sanitize_message(exc.reason, (self._api_key,))
+            if close_failed:
+                message += " (response cleanup failed)"
             raise MoneyCraftError(
                 "http_error",
                 f"provider HTTP {exc.code}: {message}",
@@ -390,7 +515,7 @@ class FuyaoClient:
                 exit_code=EXIT_TRANSIENT if retryable else EXIT_PROVIDER,
                 retry_after=bounded_retry_after(exc.headers),
             ) from exc
-        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError, http.client.IncompleteRead) as exc:
             raise MoneyCraftError(
                 "network_error",
                 sanitize_message(exc, (self._api_key,)),
@@ -432,7 +557,10 @@ class FuyaoClient:
 
 def parse_iso_date(value: str) -> dt.date:
     try:
-        return dt.date.fromisoformat(value)
+        parsed = dt.date.fromisoformat(value)
+        if parsed.isoformat() != value:
+            raise ValueError("noncanonical date")
+        return parsed
     except ValueError as exc:
         raise MoneyCraftError(
             "usage_error",
@@ -448,6 +576,8 @@ def date_to_ms(value: str) -> int:
 
 
 def add_years(value: dt.date, years: int) -> dt.date:
+    if value.year + years > dt.MAXYEAR:
+        return dt.date.max
     try:
         return value.replace(year=value.year + years)
     except ValueError:
@@ -558,10 +688,13 @@ def probe_python_modules(
     if not python.is_file() or not os.access(python, os.X_OK):
         return unavailable, None
     if Path(sys.executable).absolute() == python.absolute():
-        return {
-            name: importlib.util.find_spec(module) is not None
-            for name, module in modules
-        }, None
+        try:
+            return {
+                name: importlib.util.find_spec(module) is not None
+                for name, module in modules
+            }, None
+        except (ImportError, ValueError) as exc:
+            return unavailable, f"preferred runtime dependency probe failed: {type(exc).__name__}"
 
     probe = (
         "import importlib.util,json,sys;"
@@ -577,7 +710,7 @@ def probe_python_modules(
             check=False,
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
         return unavailable, f"preferred runtime dependency probe failed: {type(exc).__name__}"
     if completed.returncode != 0:
         return unavailable, f"preferred runtime dependency probe exited {completed.returncode}"
@@ -599,6 +732,8 @@ def maybe_reexec_data_runtime() -> None:
     if not source.startswith("environment:") and sys.prefix != sys.base_prefix:
         return
     if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        if source.startswith("environment:"):
+            raise MoneyCraftError("invalid_configuration", "explicit data Python must be an executable file", exit_code=EXIT_CONFIG)
         return
     try:
         if Path(sys.prefix).resolve() == candidate.parent.parent.resolve():
@@ -608,11 +743,14 @@ def maybe_reexec_data_runtime() -> None:
     environment = dict(os.environ)
     environment[DATA_RUNTIME_GUARD] = "1"
     environment["MONEY_CRAFT_DATA_RUNTIME_SOURCE"] = source
-    os.execve(
-        str(candidate),
-        [str(candidate), str(Path(__file__).resolve()), *sys.argv[1:]],
-        environment,
-    )
+    try:
+        os.execve(
+            str(candidate),
+            [str(candidate), str(Path(__file__).resolve()), *sys.argv[1:]],
+            environment,
+        )
+    except OSError as exc:
+        raise MoneyCraftError("invalid_configuration", "cannot start selected data Python", exit_code=EXIT_CONFIG) from exc
 
 
 def validate_capture_args(capture_dir: str | None, source_id: str | None) -> tuple[Path, str] | None:
@@ -742,6 +880,12 @@ def build_parser() -> argparse.ArgumentParser:
     self_test = subparsers.add_parser("self-test")
     self_test.add_argument("--json", action="store_true")
 
+    portfolio = subparsers.add_parser("portfolio")
+    portfolio_sub = portfolio.add_subparsers(dest="portfolio_command", required=True)
+    portfolio_audit_parser = portfolio_sub.add_parser("audit")
+    portfolio_audit_parser.add_argument("--input", required=True)
+    portfolio_audit_parser.add_argument("--json", action="store_true")
+
     data = subparsers.add_parser("data")
     data_subparsers = data.add_subparsers(dest="data_command", required=True)
     search = data_subparsers.add_parser("search")
@@ -840,6 +984,7 @@ def build_parser() -> argparse.ArgumentParser:
         research_command.add_argument("--latest-report", required=True)
         research_command.add_argument("--latest-report-end")
         research_command.add_argument("--latest-annual-report")
+        research_command.add_argument("--additional-evidence", type=Path, help="JSON array of optional typed source declarations, frozen at plan/init")
         research_command.add_argument(
             "--provider-mode", choices=["auto", "required", "disabled"], default="auto"
         )
@@ -855,18 +1000,44 @@ def build_parser() -> argparse.ArgumentParser:
     research_collect.add_argument("--workspace", required=True, type=Path)
     research_collect.add_argument("--resume", action="store_true")
     research_collect.add_argument("--json", action="store_true")
-    research_import = research_subparsers.add_parser("import-official")
-    research_import.add_argument("--workspace", required=True, type=Path)
-    research_import.add_argument("--source-id", required=True)
-    research_import.add_argument("--file", required=True, type=Path)
-    research_import.add_argument("--url", required=True)
-    research_import.add_argument("--title")
-    research_import.add_argument("--retrieved-on")
-    research_import.add_argument("--json", action="store_true")
+    for import_name in ("import-official", "import-public"):
+        research_import = research_subparsers.add_parser(import_name)
+        research_import.add_argument("--workspace", required=True, type=Path)
+        research_import.add_argument("--source-id", required=True)
+        research_import.add_argument("--file", required=True, type=Path)
+        research_import.add_argument("--url", required=True)
+        research_import.add_argument("--title")
+        research_import.add_argument("--retrieved-on")
+        research_import.add_argument("--json", action="store_true")
+        if import_name == "import-public":
+            research_import.add_argument("--captured-at", required=True)
+            research_import.add_argument("--observed-at", required=True)
     for name in ("status", "finalize"):
         research_command = research_subparsers.add_parser(name)
         research_command.add_argument("--workspace", required=True, type=Path)
         research_command.add_argument("--json", action="store_true")
+
+    earnings = subparsers.add_parser("earnings")
+    earnings_subparsers = earnings.add_subparsers(dest="earnings_command", required=True)
+    driver_model = earnings_subparsers.add_parser("drivers")
+    driver_model.add_argument("--input", required=True, type=Path)
+    driver_model.add_argument("--json", action="store_true")
+    crosscheck_preview = earnings_subparsers.add_parser("crosscheck-preview")
+    crosscheck_preview.add_argument("--baseline", required=True, type=Path)
+    crosscheck_preview.add_argument("--input", required=True, type=Path)
+    crosscheck_preview.add_argument("--json", action="store_true")
+    inspect_preview = earnings_subparsers.add_parser("inspect-preview")
+    inspect_preview.add_argument("--baseline", required=True, type=Path)
+    inspect_preview.add_argument("--json", action="store_true")
+    for name in ("seal-preview", "replay-preview"):
+        command = earnings_subparsers.add_parser(name)
+        command.add_argument("--input", required=True, type=Path)
+        command.add_argument("--output" if name == "seal-preview" else "--baseline", required=True, type=Path)
+        command.add_argument("--json", action="store_true")
+    earnings_review = earnings_subparsers.add_parser("review")
+    earnings_review.add_argument("--input", required=True, type=Path)
+    earnings_review.add_argument("--previous-thesis", required=True, type=Path)
+    earnings_review.add_argument("--json", action="store_true")
 
     thesis = subparsers.add_parser("thesis")
     thesis_subparsers = thesis.add_subparsers(dest="thesis_command", required=True)
@@ -955,6 +1126,9 @@ def doctor_payload() -> dict[str, Any]:
             sanitize_message(exc),
             exit_code=EXIT_CONFIG,
         ) from exc
+    yfinance_dependencies, yfinance_probe_error = probe_python_modules(
+        Path(sys.executable), (("yfinance", "yfinance"),)
+    )
     research_output_error: research_run.ResearchRunError | None = None
     try:
         research_output_root, research_output_source = research_run.output_root()
@@ -1046,7 +1220,8 @@ def doctor_payload() -> dict[str, Any]:
             "network_checked": False,
         },
         "yfinance": {
-            "configured": importlib.util.find_spec("yfinance") is not None,
+            "configured": yfinance_dependencies["yfinance"],
+            "dependency_probe_error": yfinance_probe_error,
             "version": yfinance_adapter.installed_version(),
             "requirements": "skills/money-craft/requirements-yfinance.txt",
             "adapter_scope": "Hong Kong and U.S. secondary market data",
@@ -1150,6 +1325,8 @@ Official facts change.
             "S11",
             "S12",
             "S13",
+            "S21",
+            "S22",
             "S18",
             "S19",
             "S20",
@@ -1187,6 +1364,12 @@ Official facts change.
         )
         if health["score"] != 7 or health["status"] != "WEAKENED":
             raise AssertionError("tracking health contract failed")
+        unknown_health = tracking_workflow.health_contract({
+            "hypotheses": [{"ID": "H01", "状态": "UNVERIFIED"}],
+            "red_lines": [{"ID": "R01", "当前状态": "CLEAR"}],
+        })
+        if unknown_health["score"] is not None or unknown_health["status"] != "UNVERIFIED":
+            raise AssertionError("unknown tracking evidence must not imply support")
         checks.append("tracking-health-contract")
         parsed_report = report_renderer.parse_report(sample)
         if parsed_report.title != "Example":
@@ -1231,6 +1414,10 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
             "usage_error",
             f"{command} is a FRED-only macro-data operation",
             exit_code=EXIT_USAGE,
+        )
+    if provider == "yfinance" and any(getattr(args, field, None) is not None for field in ("thscode", "thscodes")):
+        raise MoneyCraftError(
+            "usage_error", "yfinance uses --symbol; --thscode/--thscodes are Fuyao-only identifiers", exit_code=EXIT_USAGE
         )
     if command == "search":
         query = args.query.strip()
@@ -1347,11 +1534,11 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
         params = {"thscode": thscode, "report": args.report}
         return "indicators", "/api/a-share/financials/indicators", params, dict(params)
     if command == "corporate-actions":
-        if args.start and args.end:
+        if args.start is not None and args.end is not None:
             validate_range(args.start, args.end)
-        elif args.start:
+        elif args.start is not None:
             parse_iso_date(args.start)
-        elif args.end:
+        elif args.end is not None:
             parse_iso_date(args.end)
         if provider == "yfinance":
             symbol = parse_yfinance_symbol(args.symbol)
@@ -1365,17 +1552,17 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
     if command == "calendar":
         if provider != "fuyao":
             raise MoneyCraftError("usage_error", "trading calendar is only available from Fuyao", exit_code=EXIT_USAGE)
-        if args.start and args.end:
+        if args.start is not None and args.end is not None:
             validate_range(args.start, args.end)
-        elif args.start:
+        elif args.start is not None:
             parse_iso_date(args.start)
-        elif args.end:
+        elif args.end is not None:
             parse_iso_date(args.end)
         return "calendar", "/api/a-share/calendar/trading-days", {}, {"start": args.start, "end": args.end}
     if command == "series":
         series_id = parse_fred_series_id(args.series_id)
         params: dict[str, Any] = {"series_id": series_id}
-        if args.as_known_on:
+        if args.as_known_on is not None:
             parse_iso_date(args.as_known_on)
             params.update({"realtime_start": args.as_known_on, "realtime_end": args.as_known_on})
         return "series", "fred://series", params, {
@@ -1384,13 +1571,13 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
         }
     if command == "observations":
         series_id = parse_fred_series_id(args.series_id)
-        if args.start and args.end:
+        if args.start is not None and args.end is not None:
             validate_range(args.start, args.end)
-        elif args.start:
+        elif args.start is not None:
             parse_iso_date(args.start)
-        elif args.end:
+        elif args.end is not None:
             parse_iso_date(args.end)
-        if args.as_known_on:
+        if args.as_known_on is not None:
             parse_iso_date(args.as_known_on)
         if args.limit < 1 or args.limit > 10000:
             raise MoneyCraftError("usage_error", "FRED observations limit must be 1..10000", exit_code=EXIT_USAGE)
@@ -1413,11 +1600,11 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
         }
     if command == "vintages":
         series_id = parse_fred_series_id(args.series_id)
-        if args.start and args.end:
+        if args.start is not None and args.end is not None:
             validate_range(args.start, args.end)
-        elif args.start:
+        elif args.start is not None:
             parse_iso_date(args.start)
-        elif args.end:
+        elif args.end is not None:
             parse_iso_date(args.end)
         if args.limit < 1 or args.limit > 10000:
             raise MoneyCraftError("usage_error", "FRED vintages limit must be 1..10000", exit_code=EXIT_USAGE)
@@ -1436,11 +1623,34 @@ def prepare_operation(args: argparse.Namespace) -> tuple[str, str, dict[str, Any
     raise MoneyCraftError("usage_error", f"unsupported data command: {command}", exit_code=EXIT_USAGE)
 
 
+def fuyao_batch_identity_warnings(operation: str, data: dict[str, Any], parameters: Mapping[str, Any]) -> list[str]:
+    """Bind CLI batch rows to requested securities without inventing missing rows."""
+    if operation not in {"snapshot", "valuations"}:
+        return []
+    requested = parameters["thscodes"].split(",")
+    rows = data.get("item")
+    if not isinstance(rows, list):
+        raise MoneyCraftError("malformed_response", "provider batch data.item must be an array", exit_code=EXIT_SCHEMA)
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise MoneyCraftError("malformed_response", "provider batch row must be an object", exit_code=EXIT_SCHEMA)
+        identity = row.get("thscode")
+        if not isinstance(identity, str) or identity not in requested or identity in seen:
+            raise MoneyCraftError("malformed_response", "provider batch contains missing, unexpected or duplicate security identity", exit_code=EXIT_SCHEMA)
+        if row.get("ticker") != identity.split(".")[0]:
+            raise MoneyCraftError("malformed_response", "provider ticker contradicts security identity", exit_code=EXIT_SCHEMA)
+        seen.add(identity)
+    missing = [identity for identity in requested if identity not in seen]
+    return ["provider returned no row for requested securities: " + ",".join(missing)] if missing else []
+
+
 def run_data(args: argparse.Namespace) -> int:
     operation, path, params, output_parameters = prepare_operation(args)
     provider = args.resolved_provider
     args.resolved_operation = operation
     args.sanitized_parameters = output_parameters
+    capture_args = validate_capture_args(args.capture_dir, args.source_id)
     authentication = "none"
     forbidden_values: tuple[str, ...] = ()
     if provider == "fuyao":
@@ -1487,11 +1697,19 @@ def run_data(args: argparse.Namespace) -> int:
         try:
             adapter_result = yfinance_adapter.YFinanceClient().request(operation, params)
         except yfinance_adapter.YFinanceAdapterError as exc:
+            if exc.kind == "missing_optional_dependency":
+                exit_code = EXIT_CONFIG
+            elif exc.retryable:
+                exit_code = EXIT_TRANSIENT
+            elif exc.kind == "malformed_response":
+                exit_code = EXIT_SCHEMA
+            else:
+                exit_code = EXIT_PROVIDER
             raise MoneyCraftError(
                 exc.kind,
                 sanitize_message(exc),
                 retryable=exc.retryable,
-                exit_code=EXIT_TRANSIENT if exc.retryable else EXIT_PROVIDER,
+                exit_code=exit_code,
             ) from exc
         result = ProviderResult(
             operation=operation,
@@ -1504,6 +1722,8 @@ def run_data(args: argparse.Namespace) -> int:
         )
     data = result.payload.get("data")
     warnings: list[str] = []
+    if provider == "fuyao":
+        warnings.extend(fuyao_batch_identity_warnings(operation, data, params))
     if provider == "fuyao" and args.data_command == "calendar" and (args.start or args.end):
         data = filter_calendar(data, args.start, args.end)
         warnings.append("calendar date range was filtered locally; the provider endpoint has a fixed one-year window")
@@ -1518,6 +1738,10 @@ def run_data(args: argparse.Namespace) -> int:
                 "FRED series can be revised and third-party series may have separate rights; preserve metadata and use ALFRED as-known-on dates for historical claims.",
             ]
         )
+    if provider == "fred":
+        pagination_notice = fred_adapter.pagination_warning(operation, data)
+        if pagination_notice:
+            warnings.append(pagination_notice)
     data_object = result.payload.get("data")
     source_timestamp = data_object.get("timestamp") if isinstance(data_object, dict) else None
     response: dict[str, Any] = {
@@ -1532,7 +1756,6 @@ def run_data(args: argparse.Namespace) -> int:
         "data": data,
         "warnings": warnings,
     }
-    capture_args = validate_capture_args(args.capture_dir, args.source_id)
     if capture_args:
         destination = capture_result(
             capture_args[0],
@@ -1568,6 +1791,15 @@ def run_audit(args: argparse.Namespace) -> int:
     return 0 if result["valid"] else EXIT_PROVIDER
 
 
+def research_yfinance_available() -> bool:
+    dependencies, error = probe_python_modules(
+        Path(sys.executable), (("yfinance", "yfinance"),)
+    )
+    if error:
+        raise WorkflowError("invalid_configuration", error, exit_code=EXIT_CONFIG)
+    return dependencies["yfinance"]
+
+
 def research_provider(mode: str, *, adapter: str, security_supported: bool) -> dict[str, Any]:
     if mode == "disabled":
         return {
@@ -1586,7 +1818,7 @@ def research_provider(mode: str, *, adapter: str, security_supported: bool) -> d
             "network_checked": False,
         }
     if adapter == "yfinance":
-        configured = importlib.util.find_spec("yfinance") is not None
+        configured = research_yfinance_available()
         if not configured and mode == "required":
             raise WorkflowError(
                 "missing_optional_dependency",
@@ -1622,6 +1854,22 @@ def research_provider(mode: str, *, adapter: str, security_supported: bool) -> d
     }
 
 
+def load_additional_evidence(path: Path | None) -> list[dict[str, Any]] | None:
+    if path is None:
+        return None
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("size limit")
+        declarations = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeError, RecursionError) as exc:
+        raise WorkflowError("invalid_additional_evidence", "additional evidence must be readable UTF-8 JSON within 64 KiB") from exc
+    if not isinstance(declarations, list):
+        raise WorkflowError("invalid_additional_evidence", "additional evidence must be a JSON array")
+    return declarations
+
+
 def run_research(args: argparse.Namespace) -> int:
     try:
         if args.research_command in {"plan", "init"}:
@@ -1644,6 +1892,7 @@ def run_research(args: argparse.Namespace) -> int:
                 latest_report=args.latest_report,
                 latest_report_end=args.latest_report_end,
                 latest_annual_report=args.latest_annual_report,
+                additional_evidence=load_additional_evidence(args.additional_evidence),
                 provider=research_provider(
                     args.provider_mode,
                     adapter=adapter,
@@ -1669,41 +1918,45 @@ def run_research(args: argparse.Namespace) -> int:
             print_json(result)
             return 0
         if args.research_command == "collect":
-            _root, plan, case, _state = research_run.load_workspace(args.workspace)
-            adapter = str(plan.get("provider", {}).get("adapter", "fuyao"))
-            if plan.get("provider", {}).get("mode") == "disabled":
-                raise WorkflowError("provider_disabled", "research workspace explicitly disables the structured-data provider")
-            if not case["operations"]:
-                raise WorkflowError(
-                    "provider_unavailable",
-                    "research workspace has no executable provider operations; use official evidence imports",
+            with research_run.workspace_lock(args.workspace):
+                _root, plan, case, _state = research_run.load_workspace(args.workspace)
+                adapter = str(plan.get("provider", {}).get("adapter", "fuyao"))
+                if plan.get("provider", {}).get("mode") == "disabled":
+                    raise WorkflowError("provider_disabled", "research workspace explicitly disables the structured-data provider")
+                if not case["operations"]:
+                    raise WorkflowError(
+                        "provider_unavailable",
+                        "research workspace has no executable provider operations; use official evidence imports",
+                    )
+                if adapter == "fuyao":
+                    try:
+                        load_fuyao_credential()
+                    except MoneyCraftError as exc:
+                        raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
+                elif not research_yfinance_available():
+                    raise WorkflowError(
+                        "missing_optional_dependency",
+                        "install skills/money-craft/requirements-yfinance.txt in the active Python environment",
+                        exit_code=EXIT_CONFIG,
+                    )
+                result = research_run._collect_workspace_locked(
+                    args.workspace,
+                    runtime=Path(__file__).resolve(),
+                    resume=args.resume,
                 )
-            if adapter == "fuyao":
-                try:
-                    load_fuyao_credential()
-                except MoneyCraftError as exc:
-                    raise WorkflowError(exc.kind, sanitize_message(exc), exit_code=exc.exit_code) from exc
-            elif importlib.util.find_spec("yfinance") is None:
-                raise WorkflowError(
-                    "missing_optional_dependency",
-                    "install skills/money-craft/requirements-yfinance.txt in the active Python environment",
-                    exit_code=EXIT_CONFIG,
-                )
-            result = research_run.collect_workspace(
-                args.workspace,
-                runtime=Path(__file__).resolve(),
-                resume=args.resume,
-            )
             print_json(result)
             return 0 if result["valid"] else EXIT_PROVIDER
-        if args.research_command == "import-official":
-            result = research_run.import_official_source(
+        if args.research_command in {"import-official", "import-public"}:
+            importer = research_run.import_public_source if args.research_command == "import-public" else research_run.import_official_source
+            public_times = {"captured_at": args.captured_at, "observed_at": args.observed_at} if args.research_command == "import-public" else {}
+            result = importer(
                 args.workspace,
                 source_id=args.source_id,
                 source_file=args.file,
                 url=args.url,
                 title=args.title,
                 retrieved_on=args.retrieved_on,
+                **public_times,
             )
             print_json(result)
             return 0
@@ -1845,6 +2098,25 @@ def main() -> int:
             return run_audit(args)
         if args.command == "research":
             return run_research(args)
+        if args.command == "portfolio":
+            result = portfolio_audit.review_file(args.input)
+            print_json(result)
+            return 0 if result["valid"] else 2
+        if args.command == "earnings":
+            if args.earnings_command == "drivers":
+                result = earnings_drivers.review_file(args.input)
+            elif args.earnings_command == "crosscheck-preview":
+                result = earnings_crosscheck.check_file(args.input, args.baseline)
+            elif args.earnings_command == "inspect-preview":
+                result = earnings_baseline.inspect_baseline(args.baseline)
+            elif args.earnings_command == "seal-preview":
+                result = earnings_baseline.seal(args.input, args.output)
+            elif args.earnings_command == "replay-preview":
+                result = earnings_baseline.replay(args.baseline, args.input)
+            else:
+                result = earnings_update.review_file(args.input, args.previous_thesis)
+            print_json(result)
+            return 0 if result["valid"] else EXIT_SCHEMA
         if args.command == "thesis":
             return run_thesis(args)
         if args.command == "track":
@@ -1889,6 +2161,9 @@ if __name__ == "__main__":
         runtime_paths.load_explicit_env_file()
         maybe_reexec_data_runtime()
         raise SystemExit(main())
+    except MoneyCraftError as exc:
+        print_json(error_payload(exc))
+        raise SystemExit(exc.exit_code)
     except runtime_paths.RuntimePathError as exc:
         print_json(
             error_payload(

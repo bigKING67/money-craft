@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import re
+import json
+import subprocess
+import tempfile
+import os
+from unittest import mock
 import sys
 import unittest
 from pathlib import Path
@@ -110,6 +115,590 @@ EXTENDED_REPORT = """> 研究日期：2026-08-24
 
 
 class ReportRendererTests(unittest.TestCase):
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_chart_candidates_follow_visible_top_level_markdown_tables(self):
+        table = "| 指标 | 2023 | 2024 | 2025 |\n|---|---|---|---|\n| 营业收入（亿元） | 1 | 2 | 3 |\n| 归母净利润（亿元） | 1 | 2 | 3 |"
+        examples = ["<!--\n" + table + "\n-->", "<div>\n" + table + "\n</div>",
+                    "<details>\n" + table + "\n</details>", "```\n" + table + "\n```",
+                    "\n".join("> " + line for line in table.splitlines()),
+                    "- example\n\n" + "\n".join("    " + line for line in table.splitlines())]
+        for example in examples:
+            with self.subTest(example=example[:30]):
+                tables = []
+                report_renderer.markdown_to_html(example, chart_tables=tables)
+                self.assertEqual(tables, [])
+                report_renderer.markdown_to_html(example + "\n\n" + table, chart_tables=tables)
+                self.assertEqual(tables, report_renderer.parse_markdown_tables(table))
+
+    def test_audit_display_does_not_infer_pass_from_list_or_conflicting_counts(self):
+        for payload in ([], [{"valid": False}], {"verdict": "PASS", "total": 2, "check_count": 3, "pass_count": 2}, {"valid": False, "verdict": "PASS"},
+                        {"verdict": "PASS", "pass_count": 1, "total": 2},
+                        {"verdict": "PASS", "pass_count": True, "total": 1}):
+            with self.subTest(payload=payload):
+                self.assertNotEqual(report_renderer.audit_summary(payload, None)[1], "PASS")
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_hidden_price_cannot_override_visible_report_or_scenario(self):
+        for hidden in ("<!-- 收盘价999元 -->", "```\n收盘价999元\n```", "> 收盘价999元", "<div>收盘价999元</div>"):
+            parsed = report_renderer.parse_report(SAMPLE_REPORT.replace("## 结论", "## 结论\n\n" + hidden + "\n"))
+            document, _ = report_renderer.build_document(parsed, "a" * 64,
+                template=report_renderer.DEFAULT_TEMPLATE.read_text(), style=report_renderer.DEFAULT_STYLE.read_text(),
+                script=report_renderer.DEFAULT_SCRIPT.read_text(), audit=None, evidence=None, revision=None,
+                archive_manifest=None, charts=True)
+            self.assertIn('600000.SH · 2026-08-24', document)
+            self.assertIn('截止日 84.30', document)
+            self.assertNotIn('截止日 999', document)
+            self.assertNotIn('999 元</dd>', document)
+
+    def test_falsification_status_comes_from_status_column(self):
+        table = report_renderer.MarkdownTable(("编号", "条件", "强度", "状态"),
+            (("R01", "由 WATCH 转为已触发", "material", "BROKEN"),))
+        self.assertEqual(report_renderer.falsification_rows([table]), [("R01", "material", "BROKEN")])
+        ambiguous = report_renderer.MarkdownTable(("编号", "状态", "强度", "当前状态"), table.rows)
+        self.assertIsNone(report_renderer.falsification_rows([ambiguous]))
+
+    def test_company_name_suffix_and_duplicate_scenarios(self):
+        self.assertEqual(report_renderer.display_company_name(report_renderer.parse_report(SAMPLE_REPORT)), "示例公司")
+        table = report_renderer.scenario_table(report_renderer.parse_markdown_tables(SAMPLE_REPORT))
+        self.assertTrue(report_renderer.scenario_chart(table, None))
+        duplicate = report_renderer.MarkdownTable(table.headers, table.rows + (table.rows[0],))
+        self.assertEqual(report_renderer.scenario_chart(duplicate, None), "")
+
+    def test_code_tables_are_excluded_from_chart_candidates(self):
+        table = "| 指标 | 2023 | 2024 | 2025 |\n|---|---|---|---|\n| 营业收入（亿元） | 1 | 2 | 3 |\n| 归母净利润（亿元） | 1 | 2 | 3 |"
+        for opening, closing in (("```markdown", "```"), ("~~~~", "~~~~"), ("````", "`````"), ("  ```", "  ```")):
+            with self.subTest(opening=opening):
+                self.assertEqual(report_renderer.parse_markdown_tables(opening+"\n"+table+"\n"+closing), [])
+                self.assertEqual(report_renderer.parse_markdown_tables(opening+"\n"+table), [])
+        for indent in ("    ", "\t", " \t", "  \t", "   \t"):
+            with self.subTest(indent=repr(indent)):
+                self.assertEqual(report_renderer.parse_markdown_tables("\n".join(indent+line for line in table.splitlines())), [])
+        self.assertEqual(report_renderer.parse_markdown_tables("```\n"+table+"\n```\n\n"+table), report_renderer.parse_markdown_tables(table))
+
+    def test_table_separator_must_match_every_header_column(self):
+        for separator in ("|---|bad|---|", "|---|---|", "|---|---|---|extra|"):
+            with self.subTest(separator=separator):
+                self.assertEqual(report_renderer.parse_markdown_tables("| a | b | c |\n"+separator+"\n| 1 | 2 | 3 |"), [])
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_code_example_cannot_supply_financial_chart(self):
+        content = SAMPLE_REPORT.replace("## 财务趋势", "## 财务趋势\n\n```markdown").replace("## 估值与假设", "```\n\n## 估值与假设")
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory)/"source.md", Path(directory)/"out.html"
+            source.write_text(content)
+            before = source.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR/"report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            self.assertNotIn('data-chart="financial-trends"', rendered)
+            self.assertIn('data-chart="valuation-scenarios"', rendered)
+            self.assertIn("<pre><code", rendered)
+            self.assertIn("营业收入（亿元）", rendered)
+            self.assertEqual(source.read_bytes(), before)
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_partial_manifest_does_not_claim_complete_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, output, manifest = Path(directory)/"source.md", Path(directory)/"out.html", Path(directory)/"evidence.json"
+            source.write_text(SAMPLE_REPORT)
+            manifest.write_text(json.dumps({"summary": {"captured": 2, "expected": 15, "failed": 0}, "groups": [{"source_id": "S01", "items": []}]}))
+            before = (source.read_bytes(), manifest.read_bytes())
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR/"report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only", "--evidence-manifest", str(manifest)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            self.assertIn("清单计数 2/15，失败 0", rendered)
+            self.assertNotIn("2/15，完整", rendered)
+            self.assertNotIn("组已捕获", rendered)
+            self.assertEqual((source.read_bytes(), manifest.read_bytes()), before)
+
+    def test_evidence_counts_never_claim_quality_or_completeness(self):
+        for captured, expected in ((0, 15), (2, 15), (15, 15), (0, 0)):
+            summary = report_renderer.evidence_summary({"summary": {"captured": captured, "expected": expected, "failed": 0}})
+            self.assertIn(f"{captured}/{expected}", summary)
+            self.assertIn("清单", summary)
+            self.assertNotIn("完整", summary)
+        for value in ("bad", True, -1, 1.2, [], None):
+            with self.subTest(value=value):
+                summary = report_renderer.evidence_summary({"summary": {"captured": value, "expected": 15, "failed": 0}})
+                self.assertIn("不可用", summary)
+        self.assertIn("不可用", report_renderer.evidence_summary({"summary": {"captured": 20, "expected": 15, "failed": 0}}))
+        self.assertIn("不可用", report_renderer.evidence_summary({"summary": {"captured": 0, "captured_urls": 15, "expected": 15}}))
+        self.assertIn("未提供", report_renderer.evidence_summary({"summary": {"captured": 2, "expected": 15}}))
+
+    def test_empty_evidence_group_is_only_registered_not_captured(self):
+        chart = report_renderer.evidence_coverage_chart({"groups": [{"source_id": "S01", "items": []}]})
+        self.assertIn("0 项", chart)
+        self.assertIn("清单登记", chart)
+        self.assertNotIn("已捕获", chart)
+        self.assertIn("不代表", chart)
+        self.assertIn("条目数未提供", report_renderer.evidence_coverage_chart({"groups": [{"source_id": "S01"}]}))
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_descending_years_keep_forward_growth_and_source(self):
+        before, rest = EXTENDED_REPORT.split("## 财务趋势\n", 1)
+        table, after = rest.split("## 最近一期变化", 1)
+        lines = []
+        for line in table.splitlines():
+            if line.startswith("|"):
+                cells = report_renderer.split_table_row(line)
+                line = "| " + " | ".join((cells[0], *reversed(cells[1:]))) + " |"
+            lines.append(line)
+        content = before + "## 财务趋势\n" + "\n".join(lines) + "\n## 最近一期变化" + after
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory)/"source.md", Path(directory)/"out.html"
+            source.write_text(content)
+            snapshot = source.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR/"report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            canonical = report_renderer.financial_trend_table(report_renderer.parse_markdown_tables(EXTENDED_REPORT))
+            self.assertIn(report_renderer.financial_chart(canonical), rendered)
+            self.assertIn(report_renderer.cash_flow_structure_chart(canonical), rendered)
+            self.assertEqual(source.read_bytes(), snapshot)
+
+    def test_financial_year_order_is_chronological_and_duplicates_rejected(self):
+        canonical = report_renderer.MarkdownTable(("指标", "2023", "2024", "2025"), (("营业收入（亿元）", "10", "20", "30"), ("经营现金流（亿元）", "4", "5", "6"), ("资本开支代理项（亿元）", "1", "2", "3")))
+        for order in ((0,3,2,1), (0,2,1,3)):
+            permuted = report_renderer.MarkdownTable(tuple(canonical.headers[i] for i in order), tuple(tuple(row[i] for i in order) for row in canonical.rows))
+            self.assertEqual(report_renderer.financial_chart(permuted), report_renderer.financial_chart(canonical))
+            self.assertEqual(report_renderer.cash_flow_structure_chart(permuted), report_renderer.cash_flow_structure_chart(canonical))
+        duplicate = report_renderer.MarkdownTable(("指标", "2023", "2023", "2025"), canonical.rows)
+        self.assertEqual(report_renderer.financial_chart(duplicate), "")
+        self.assertIsNone(report_renderer.cash_flow_structure_chart(duplicate))
+
+    def test_year_identity_uses_numeric_value_across_digit_forms(self):
+        rows = (("营业收入（亿元）", "1", "2", "3"), ("经营现金流（亿元）", "4", "5", "6"), ("资本开支代理项（亿元）", "1", "1", "1"))
+        duplicate = report_renderer.MarkdownTable(("指标", "2023", "20２３", "20٢٣"), rows)
+        self.assertEqual(report_renderer.chronological_year_indices(duplicate), [])
+        self.assertEqual(report_renderer.financial_chart(duplicate), "")
+        self.assertIsNone(report_renderer.cash_flow_structure_chart(duplicate))
+        mixed = report_renderer.MarkdownTable(("指标", "2023", "2025", "20２４"), rows)
+        self.assertEqual(report_renderer.chronological_year_indices(mixed), [1,3,2])
+        self.assertIn("<svg", report_renderer.financial_chart(mixed))
+        self.assertIn("<svg", report_renderer.cash_flow_structure_chart(mixed))
+
+    def test_financial_year_gaps_use_elapsed_year_coordinates(self):
+        table = report_renderer.MarkdownTable(("指标", "2020", "2021", "2025"), (("营业收入（亿元）", "10", "20", "30"), ("经营现金流（亿元）", "4", "5", "6"), ("资本开支代理项（亿元）", "1", "2", "3")))
+        for chart in (report_renderer.financial_chart(table), report_renderer.cash_flow_structure_chart(table)):
+            points = re.search(r'<polyline points="([^"]+)"', chart).group(1).split()
+            xs = [float(point.split(",")[0]) for point in points]
+            self.assertAlmostEqual((xs[1]-xs[0])/(xs[2]-xs[0]), .2, places=3)
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_nonmonetary_financial_rows_remain_table_only(self):
+        content = EXTENDED_REPORT.replace("（亿元）", "（%）")
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory)/"source.md", Path(directory)/"out.html"
+            source.write_text(content)
+            before = source.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR/"report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            for name in ("financial-trends", "cash-flow-structure"):
+                self.assertNotIn(f'data-chart="{name}"', rendered)
+            self.assertIn("经营现金流（%）", rendered)
+            self.assertIn('data-chart="valuation-scenarios"', rendered)
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_financial_charts_require_monetary_row_units(self):
+        for suffix in ("", "（%）", "（元/股）", "（百分点）", "（未知）"):
+            with self.subTest(suffix=suffix):
+                table = report_renderer.MarkdownTable(("指标", "2023", "2024", "2025"), (("营业收入"+suffix, "1", "2", "3"), ("经营现金流"+suffix, "4", "5", "6"), ("资本开支代理项"+suffix, "1", "1", "1")))
+                self.assertEqual(report_renderer.financial_chart(table), "")
+                self.assertIsNone(report_renderer.cash_flow_structure_chart(table))
+        for unit in ("亿元", "万美元", "港元"):
+            with self.subTest(unit=unit):
+                table = report_renderer.MarkdownTable(("指标", "2023", "2024", "2025"), ((f"经营现金流（{unit}）", "4", "5", "6"), (f"资本开支代理项（{unit}）", "1", "1", "1")))
+                self.assertIn(f"经营现金流（{unit}）", report_renderer.financial_chart(table))
+                self.assertIn(f"{unit} · FCF", report_renderer.cash_flow_structure_chart(table))
+
+    def test_financial_header_and_row_unit_conflict_rejects_charts(self):
+        table = report_renderer.MarkdownTable(("指标（万元）", "2023", "2024", "2025"), (("经营现金流（亿元）", "4", "5", "6"), ("资本开支代理项（亿元）", "1", "1", "1")))
+        self.assertEqual(report_renderer.financial_chart(table), "")
+        self.assertIsNone(report_renderer.cash_flow_structure_chart(table))
+
+    def test_yoy_chart_requires_percentage_units(self):
+        for header, cells in (("同比（百分点）", ("2", "3")), ("同比（亿元）", ("2", "3")), ("同比增加额", ("2%", "3%")), ("同比", ("2", "3")), ("同比（bp）", ("2%", "3%"))):
+            with self.subTest(header=header):
+                table = report_renderer.MarkdownTable(("指标", header), (("营业收入", cells[0]), ("归母净利润", cells[1])))
+                self.assertIsNone(report_renderer.yoy_change_table([table]))
+                self.assertIsNone(report_renderer.earnings_quality_chart(table, 1))
+        for header, cells in (("同比", ("2%", "-3%")), ("同比（%）", ("2", "-3")), ("同比增长率（%）", ("2%", "-3"))):
+            with self.subTest(header=header):
+                table = report_renderer.MarkdownTable(("指标", header), (("营业收入", cells[0]), ("归母净利润", cells[1])))
+                self.assertIsNotNone(report_renderer.yoy_change_table([table]))
+                chart = report_renderer.earnings_quality_chart(table, 1)
+                self.assertIn("+2.00%", chart)
+                self.assertIn("−3.00%", chart)
+                # A numeric table alone cannot establish the provenance of its
+                # percentages (reported, calculated, or hypothetical).
+                self.assertNotIn("OBSERVED", chart)
+                self.assertNotIn("INFERRED", chart)
+                self.assertIn("证据状态、口径与计算见正文", chart)
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_percentage_point_table_is_not_a_percentage_chart(self):
+        content = EXTENDED_REPORT.replace("| 同比 |", "| 同比（百分点） |").replace("+9.50%", "9.5").replace("-12.30%", "-12.3").replace("-11.20%", "-11.2")
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory)/"source.md", Path(directory)/"out.html"
+            source.write_text(content)
+            before = source.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR/"report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            self.assertNotIn('data-chart="earnings-quality"', rendered)
+            self.assertIn("同比（百分点）", rendered)
+            self.assertIn('data-chart="financial-trends"', rendered)
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_scenario_units_must_establish_yuan_per_share(self):
+        for header in ("目标价（美元）", "目标价（港元）", "目标价 USD", "企业价值（亿元）", "总价值（元）", "示意价值", "每股价值（元/股，美元）"):
+            with self.subTest(header=header):
+                table = report_renderer.MarkdownTable(("情景", header), (("Bear", "10"), ("Base", "20"), ("Bull", "30")))
+                self.assertEqual(report_renderer.scenario_chart(table, None), "")
+        for header, suffix in (("目标价（元/股）", ""), ("每股价值（元）", ""), ("示意价值", " 元"), ("每股合理价值（人民币元/股）", " 元/股")):
+            with self.subTest(header=header):
+                table = report_renderer.MarkdownTable(("情景", header), tuple((label, str(value)+suffix) for label, value in (("Bear",10),("Base",20),("Bull",30))))
+                self.assertIn('data-chart="valuation-scenarios"', report_renderer.scenario_chart(table, None))
+
+    def test_mixed_unit_scenario_cannot_be_silently_dropped(self):
+        table = report_renderer.MarkdownTable(("情景", "目标价（元/股）"), (("Bear", "10"), ("Base", "20"), ("Bull", "30"), ("乐观", "40 美元")))
+        self.assertEqual(report_renderer.scenario_chart(table, None), "")
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_foreign_currency_scenarios_remain_table_only(self):
+        content = SAMPLE_REPORT.replace("示意价值", "目标价（美元）").replace("60.50 元", "60.50").replace("85.26 元", "85.26").replace("110.50 元", "110.50")
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory)/"source.md", Path(directory)/"out.html"
+            source.write_text(content)
+            before = source.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR/"report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            self.assertNotIn('data-chart="valuation-scenarios"', rendered)
+            self.assertIn("目标价（美元）", rendered)
+            self.assertIn('data-chart="financial-trends"', rendered)
+            self.assertEqual(source.read_bytes(), before)
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_tiny_prices_and_zero_bars_keep_their_meaning(self):
+        from xml.etree import ElementTree as ET
+        content = SAMPLE_REPORT.replace("84.30 元", "0.0001 元").replace("60.50 元", "0 元").replace("85.26 元", "0.0001 元")
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "source.md", Path(directory) / "out.html"
+            source.write_text(content)
+            before = source.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR / "report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            scenario = re.search(r'<figure[^>]*data-chart="valuation-scenarios".*?</figure>', rendered, re.S).group()
+            svg = ET.fromstring(re.search(r"<svg.*?</svg>", scenario, re.S).group())
+            self.assertEqual(float(svg.findall("rect")[0].attrib["width"]), 0)
+            self.assertGreater(float(svg.findall("rect")[1].attrib["width"]), 0)
+            self.assertIn("截止日 1.000e−04", scenario)
+            self.assertIn("Base 1.000e−04 元", scenario)
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_chart_labels_preserve_nonzero_magnitude_and_bound_large_text(self):
+        for value in (0.0001, -0.0001, 5e-324, -5e-324, 1e300):
+            with self.subTest(value=value):
+                label = report_renderer.format_value(value).replace("−", "-")
+                self.assertNotEqual(float(label.replace(",", "")), 0)
+                self.assertLess(len(label), 32)
+                percent = report_renderer.format_percent(value).replace("−", "-").removesuffix("%")
+                self.assertNotEqual(float(percent), 0)
+                self.assertLess(len(percent), 32)
+        self.assertEqual(report_renderer.format_value(-0.0), "0")
+        self.assertEqual(report_renderer.format_percent(-0.0), "+0.00%")
+
+    def test_zero_bars_have_zero_width_and_tiny_prices_remain_nonzero(self):
+        from xml.etree import ElementTree as ET
+        scenario = report_renderer.MarkdownTable(("情景", "示意价值（元/股）"), (("Bear", "0"), ("Base", "0.0001"), ("Bull", "1")))
+        quality = report_renderer.MarkdownTable(("指标", "同比"), (("营业收入", "0%"), ("净利润", "0.0001%")))
+        for chart in (report_renderer.scenario_chart(scenario, .0001), report_renderer.earnings_quality_chart(quality, 1)):
+            svg = ET.fromstring(re.search(r"<svg.*?</svg>", chart, re.S).group())
+            bars = svg.findall("rect")
+            self.assertEqual(float(bars[0].attrib["width"]), 0)
+            self.assertGreater(float(bars[1].attrib["width"]), 0)
+        self.assertIn("1.000e−04", report_renderer.scenario_chart(scenario, .0001))
+        self.assertLess(float(ET.fromstring(re.search(r"<svg.*?</svg>", report_renderer.scenario_chart(scenario, None), re.S).group()).findall("rect")[1].attrib["width"]), .5)
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_extreme_tables_do_not_publish_nonfinite_charts(self):
+        content = EXTENDED_REPORT.replace("| 100 | 110 | 120 | 130 | 150 |", "| -1e308 | 0 | 0 | 0 | 1e308 |")
+        content = content.replace("| 8 | 13 | 9 | 16 | 14 |", "| 1e308 | 13 | 9 | 16 | 14 |").replace("| 5 | 7 | 6 | 9 | 10 |", "| -1e308 | 7 | 6 | 9 | 10 |")
+        content = content.replace("60.50 元", "-1e308 元").replace("110.50 元", "1e308 元").replace("+9.50%", "-1e308%").replace("-12.30%", "1e308%")
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "source.md", Path(directory) / "out.html"
+            source.write_text(content)
+            before = source.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR / "report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            for name in ("financial-trends", "cash-flow-structure", "valuation-scenarios", "earnings-quality"):
+                self.assertNotIn(f'data-chart="{name}"', rendered)
+            self.assertIn("1e308", rendered)
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_chart_overflow_omits_unrepresentable_axes_and_derivations(self):
+        trend = report_renderer.MarkdownTable(("指标", "2023", "2024", "2025"), (("营业收入（亿元）", "-1e308", "0", "1e308"),))
+        self.assertEqual(report_renderer.financial_chart(trend), "")
+        scenarios = report_renderer.MarkdownTable(("情景", "示意价值（元/股）"), (("Bear", "-1e308"), ("Base", "0"), ("Bull", "1e308")))
+        self.assertEqual(report_renderer.scenario_chart(scenarios, None), "")
+        quality = report_renderer.MarkdownTable(("指标", "同比"), (("营业收入", "-1e308%"), ("净利润", "1e308%")))
+        self.assertIsNone(report_renderer.earnings_quality_chart(quality, 1))
+        cash = report_renderer.MarkdownTable(("指标", "2023", "2024", "2025"), (("经营现金流（亿元）", "1e308", "1", "2"), ("资本开支代理项（亿元）", "-1e308", "1", "2")))
+        self.assertIsNone(report_renderer.cash_flow_structure_chart(cash))
+
+    def test_representable_large_axes_keep_finite_svg_coordinates(self):
+        scenarios = report_renderer.MarkdownTable(("情景", "示意价值（元/股）"), (("Bear", "1e306"), ("Base", "2e306"), ("Bull", "3e306")))
+        quality = report_renderer.MarkdownTable(("指标", "同比"), (("营业收入", "-1e306%"), ("净利润", "1e306%")))
+        for chart in (report_renderer.scenario_chart(scenarios, 2e306), report_renderer.earnings_quality_chart(quality, 1)):
+            self.assertIn("<svg", chart)
+            self.assertNotRegex(chart, r"(?i)\b(?:nan|inf)\b")
+
+    def test_unrepresentable_trend_change_is_explicit_not_infinite(self):
+        table = report_renderer.MarkdownTable(("指标", "2023", "2024", "2025"), (("营业收入（亿元）", "1e-300", "1", "1e300"),))
+        chart = report_renderer.financial_chart(table)
+        self.assertIn("变化率超出数值范围", chart)
+        self.assertNotRegex(chart, r"(?i)\b(?:nan|inf)\b")
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_preserves_ambiguous_table_without_inventing_trend(self):
+        content = SAMPLE_REPORT.replace("| 100 |", "| 10–20 |").replace("| 10 |", "| 未披露 [S01] |").replace("| 8 |", "| (12.5) |")
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / "source.md", Path(directory) / "out.html"
+            source.write_text(content)
+            before = source.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR / "report_renderer.py"), "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertTrue(json.loads(result.stdout)["valid"])
+            rendered = output.read_text()
+            self.assertNotIn('data-chart="financial-trends"', rendered)
+            self.assertIn('data-chart="valuation-scenarios"', rendered)
+            self.assertIn("10–20", rendered)
+            self.assertIn("未披露", rendered)
+            self.assertIn("(12.5)", rendered)
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_chart_numbers_require_complete_unambiguous_scalars(self):
+        for raw in ("10–20", "10-20", "未披露 [S01]", "(12.5)", "约 10", ">10", "1,2", "12万元", "12%", "1e309", "1e-999", "1e-99999999999999999999", "9" * 400):
+            with self.subTest(raw=raw):
+                self.assertIsNone(report_renderer.numeric_value(raw))
+        for raw, expected in (("0", 0), ("−12.5", -12.5), (".5", .5), ("1,234.50", 1234.5), ("**12.5**", 12.5), ("1e2", 100)):
+            with self.subTest(raw=raw):
+                self.assertEqual(report_renderer.numeric_value(raw), expected)
+
+    def test_ambiguous_cells_cannot_supply_chart_values(self):
+        for raw in ("10–20", "未披露 [S01]", "(12.5)", "12万元", "12%", "1e309"):
+            with self.subTest(raw=raw):
+                table = report_renderer.MarkdownTable(("指标", "2023", "2024", "2025"), (("营业收入（亿元）", raw, "20", "30"),))
+                self.assertEqual(report_renderer.financial_chart(table), "")
+                scenarios = report_renderer.MarkdownTable(("情景", "示意价值"), (("Bear", raw), ("Base", "20 元"), ("Bull", "30 元")))
+                self.assertEqual(report_renderer.scenario_chart(scenarios, None), "")
+                quality = report_renderer.MarkdownTable(("指标", "同比"), (("营业收入", raw), ("归母净利润", "20%")))
+                if raw != "12%":
+                    self.assertIsNone(report_renderer.earnings_quality_chart(quality, 1))
+                cash = report_renderer.MarkdownTable(("指标", "2023", "2024", "2025"), (("经营现金流（亿元）", raw, "20", "30"), ("资本开支代理项（亿元）", "1", "2", "3")))
+                self.assertIsNone(report_renderer.cash_flow_structure_chart(cash))
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_cli_pdf_failure_preserves_prior_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output, pdf = root / "report.md", root / "report.html", root / "report.pdf"
+            source.write_text(SAMPLE_REPORT)
+            output.write_text("old html"); pdf.write_bytes(b"old pdf")
+            before = {p.name: p.read_bytes() for p in root.iterdir()}
+            script = r"""
+import pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import report_renderer
+args = sys.argv[2:]
+def failure(html, pdf):
+    pdf.write_bytes(b'%PDF partial')
+    raise report_renderer.ReportRenderError('injected PDF failure')
+report_renderer.write_pdf = failure
+sys.argv = ['report_renderer.py', *args]
+raise SystemExit(report_renderer.main())
+"""
+            result = subprocess.run([sys.executable, "-c", script, str(SCRIPT_DIR), "--source", str(source),
+                "--output-html", str(output), "--output-pdf", str(pdf)], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(json.loads(result.stdout)["valid"])
+            self.assertEqual(before, {p.name: p.read_bytes() for p in root.iterdir()})
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_render_generation_failure_preserves_existing_outputs(self):
+        for failure in ("pdf", "source-drift"):
+            for existing in (False, True):
+                with self.subTest(failure=failure, existing=existing), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    source, output, pdf = root / "report.md", root / "report.html", root / "report.pdf"
+                    source.write_text(SAMPLE_REPORT)
+                    if existing:
+                        output.write_bytes(b"old html")
+                        pdf.write_bytes(b"old pdf")
+                    before = {p.name: p.read_bytes() for p in (output, pdf) if p.exists()}
+                    def generate(html_path, pdf_path):
+                        self.assertIn('<html', html_path.read_text())
+                        pdf_path.write_bytes(b"%PDF partial")
+                        if failure == "pdf": raise report_renderer.ReportRenderError("injected PDF failure")
+                        source.write_text(SAMPLE_REPORT + "\nchanged externally\n")
+                        return 1
+                    with mock.patch.object(report_renderer, "write_pdf", side_effect=generate):
+                        with self.assertRaises(report_renderer.ReportRenderError):
+                            report_renderer.render_report(source, output_html=output, output_pdf=pdf)
+                    self.assertEqual(before, {p.name: p.read_bytes() for p in (output, pdf) if p.exists()})
+                    self.assertEqual(set(p.name for p in root.iterdir()), {"report.md", *before})
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_successful_staged_render_publishes_both_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "report.md"
+            source.write_text(SAMPLE_REPORT)
+            output, pdf = root / "html/report.html", root / "pdf/report.pdf"
+            output.parent.mkdir(); pdf.parent.mkdir()
+            output.write_bytes(b"old html"); pdf.write_bytes(b"old pdf")
+            def generate(html_path, pdf_path):
+                self.assertNotEqual(html_path, output)
+                self.assertNotEqual(pdf_path, pdf)
+                self.assertEqual(output.read_bytes(), b"old html")
+                self.assertEqual(pdf.read_bytes(), b"old pdf")
+                pdf_path.write_bytes(b"%PDF fixture")
+                return 1
+            with mock.patch.object(report_renderer, "write_pdf", side_effect=generate):
+                result = report_renderer.render_report(source, output_html=output, output_pdf=pdf)
+            self.assertTrue(result["valid"])
+            self.assertEqual(result["pages"], 1)
+            self.assertEqual(pdf.read_bytes(), b"%PDF fixture")
+            self.assertTrue(report_renderer.verify_rendered_report(source, output, None)["valid"])
+            self.assertEqual([p.name for p in output.parent.iterdir()], ["report.html"])
+            self.assertEqual([p.name for p in pdf.parent.iterdir()], ["report.pdf"])
+
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_markdown_body_rejects_active_html(self):
+        fragments = ('<script>alert(1)</script>', '<![CDATA[><script>alert(1)</script>]]>', '<img src="x" onerror="alert(1)">',
+            '<iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"></iframe>', '<meta http-equiv="refresh" content="0;url=https://example.invalid">',
+            '<style>@import "https://example.invalid/style.css";</style>', '<span style="background:url(https://example.invalid/x)">x</span>',
+            '<form><input name="x"></form>', '<svg onload="alert(1)"></svg>', '<math></math>', '</article><p>escape</p>',
+            '<a href="#ok" ONCLICK="alert(1)">x</a>', '<div data-theme-toggle="true">x</div>')
+        for fragment in fragments:
+            with self.subTest(fragment=fragment):
+                with self.assertRaises(report_renderer.ReportRenderError):
+                    report_renderer.markdown_to_html(fragment)
+        safe = report_renderer.markdown_to_html('## 标题\n\n| 项目 | 数值 |\n|---|---:|\n| A | 1 |\n\n```html\n<script>alert(1)</script>\n```')
+        self.assertIn('<table>', safe)
+        self.assertIn('&lt;script&gt;', safe)
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_active_body_cli_rejection_preserves_previous_output(self):
+        for fragment in ('<script>document.title="changed";</script>', '<![CDATA[><script>alert(1)</script>]]>'):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, output = root / "report.md", root / "report.html"
+                source.write_text(SAMPLE_REPORT + "\n" + fragment + "\n")
+                output.write_text("preserve prior render")
+                before = {p.name: p.read_bytes() for p in root.iterdir()}
+                result = subprocess.run([sys.executable, str(SCRIPT_DIR / "report_renderer.py"), "--source", str(source),
+                    "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(json.loads(result.stdout)["valid"])
+                self.assertEqual(before, {p.name: p.read_bytes() for p in root.iterdir()})
+
+
+    def test_template_values_cannot_expand_other_template_fields(self):
+        for values in ({"TITLE": "{{ARTICLE}}", "ARTICLE": "unexpected expansion"},
+                       {"ARTICLE": "unexpected expansion", "TITLE": "{{ARTICLE}}"}):
+            with self.subTest(order=list(values)):
+                with self.assertRaises(report_renderer.ReportRenderError):
+                    report_renderer.replace_template("<title>{{TITLE}}</title>", values)
+        self.assertEqual(report_renderer.replace_template("{{TITLE}} / {{TITLE}}", {"TITLE": "Plain text"}), "Plain text / Plain text")
+        with self.assertRaises(report_renderer.ReportRenderError):
+            report_renderer.replace_template("{{UNKNOWN}}", {"TITLE": "Plain text"})
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_source_template_marker_rejected_before_output_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "report.md", root / "report.html"
+            source.write_text(SAMPLE_REPORT + "\n## 附注\n\n{{FOOTER_META}}\n")
+            output.write_text("preserve previous render")
+            before = {p.name: p.read_bytes() for p in root.iterdir()}
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR / "report_renderer.py"), "--source", str(source),
+                "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(json.loads(result.stdout)["valid"])
+            self.assertEqual(before, {p.name: p.read_bytes() for p in root.iterdir()})
+
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_render_cli_protects_source_and_allows_separate_html(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "report.md"
+            source.write_text(SAMPLE_REPORT)
+            original = source.read_bytes()
+            script = str(SCRIPT_DIR / "report_renderer.py")
+            collision = subprocess.run([sys.executable, script, "--source", str(source), "--output-html", str(source), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(collision.returncode, 0)
+            self.assertFalse(json.loads(collision.stdout)["valid"])
+            self.assertEqual(source.read_bytes(), original)
+            output = Path(directory) / "report.html"
+            rendered = subprocess.run([sys.executable, script, "--source", str(source), "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertEqual(rendered.returncode, 0, rendered.stdout + rendered.stderr)
+            self.assertTrue(json.loads(rendered.stdout)["valid"])
+            self.assertEqual(source.read_bytes(), original)
+            self.assertTrue(report_renderer.verify_rendered_report(source, output, None)["valid"])
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_output_aliases_are_rejected_before_any_input_is_modified(self):
+        variants = ("source", "source-symlink", "source-hardlink", "template", "style", "script",
+                    "evidence", "audit", "revision", "archive", "pdf-source", "same-outputs", "hardlinked-outputs")
+        for variant in variants:
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "report.md"
+                source.write_text(SAMPLE_REPORT)
+                inputs = {"source": source}
+                for key, original in (("template", report_renderer.DEFAULT_TEMPLATE), ("style", report_renderer.DEFAULT_STYLE), ("script", report_renderer.DEFAULT_SCRIPT)):
+                    inputs[key] = root / original.name
+                    inputs[key].write_bytes(original.read_bytes())
+                for key in ("evidence", "audit", "revision", "archive"):
+                    inputs[key] = root / (key + ".json")
+                    inputs[key].write_text("{}")
+                output_html, output_pdf = root / "output.html", None
+                if variant in inputs: output_html = inputs[variant]
+                elif variant == "source-symlink": output_html.symlink_to(source)
+                elif variant == "source-hardlink": os.link(source, output_html)
+                elif variant == "pdf-source": output_pdf = source
+                elif variant == "same-outputs": output_pdf = output_html
+                elif variant == "hardlinked-outputs":
+                    output_html.write_bytes(b"existing output")
+                    output_pdf = root / "output.pdf"
+                    os.link(output_html, output_pdf)
+                before = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+                def pdf_writer(_html, pdf):
+                    pdf.write_bytes(b"%PDF fixture")
+                    return 1
+                with mock.patch.object(report_renderer, "write_pdf", side_effect=pdf_writer):
+                    with self.assertRaises(report_renderer.ReportRenderError):
+                        report_renderer.render_report(source, output_html=output_html, output_pdf=output_pdf,
+                            template_path=inputs["template"], style_path=inputs["style"], script_path=inputs["script"],
+                            evidence_manifest=inputs["evidence"], audit_path=inputs["audit"],
+                            revision_manifest=inputs["revision"], archive_manifest=inputs["archive"])
+                self.assertEqual(before, {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()})
+
+
     def test_canonical_frontmatter_dates_survive_rendering(self) -> None:
         source = (ROOT / 'artifacts/acceptance/600519/report.md').read_text(encoding='utf-8')
         parsed = report_renderer.parse_report(source)
@@ -227,6 +816,37 @@ class ReportRendererTests(unittest.TestCase):
         self.assertEqual(headings, [("sources", "主要数据来源")])
         self.assertIn('data-section-kind="sources"', rendered)
 
+    def test_portability_checks_parsed_resource_attributes(self):
+        shell = '<meta name="offline-portable" content="true"><meta name="generator" content="Money Craft"><nav></nav><main><article>{}</article></main>'
+        for fragment in ('<img src=https://example.invalid/a.png>', '<img SRC="&#104;ttps://example.invalid/a.png">',
+                         '<a href="java&#x73;cript:alert(1)">link</a>', '<img src="relative.png">',
+                         '<img srcset="https://example.invalid/a.png 2x">', '<video poster="//example.invalid/a.png"></video>',
+                         '<form action="https://example.invalid"></form>', '<object data=//example.invalid></object>',
+                         '<svg><use xlink:href="https://example.invalid/a.svg#x"></use></svg>',
+                         '<a href="#ok" ping="https://example.invalid">link</a>'):
+            with self.subTest(fragment=fragment):
+                result = report_renderer.verify_html_text(shell.format(fragment))
+                self.assertFalse(result["valid"])
+                self.assertGreater(result["external_dependency_count"], 0)
+        safe = '<a href="#local">Local</a><span data-source-url="https://example.invalid">Source</span><code>&lt;img src=https://example.invalid&gt;</code>'
+        self.assertTrue(report_renderer.verify_html_text(shell.format(safe))["valid"])
+        embedded = '<img src="data:image/png;base64,aGVsbG8=">'
+        self.assertTrue(report_renderer.verify_html_text(shell.format(embedded))["valid"])
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_render_cli_rejects_unquoted_external_resource_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "report.md", root / "report.html"
+            source.write_text(SAMPLE_REPORT + "\n<img src=https://example.invalid/image.png>\n")
+            output.write_text("preserve previous output")
+            before = {p.name: p.read_bytes() for p in root.iterdir()}
+            result = subprocess.run([sys.executable, str(SCRIPT_DIR / "report_renderer.py"), "--source", str(source),
+                "--output-html", str(output), "--html-only"], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(json.loads(result.stdout)["valid"])
+            self.assertEqual(before, {p.name: p.read_bytes() for p in root.iterdir()})
+
     def test_portable_html_verifier_rejects_external_dependencies(self) -> None:
         source_hash = "a" * 64
         valid = (
@@ -308,7 +928,7 @@ class ReportRendererTests(unittest.TestCase):
         self.assertIn("离线核验", seal)
         self.assertIn("源文哈希", seal)
         self.assertIn("10/10 通过", seal)
-        self.assertIn("15/15，完整", seal)
+        self.assertIn("清单计数 15/15，失败 0", seal)
         self.assertIn("通过", seal)
         self.assertNotIn("FAIL 0", seal)
         self.assertNotIn("Report audit", seal)

@@ -8,10 +8,17 @@ import importlib
 import importlib.metadata
 import json
 import math
+import sys
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping
+
+
+SNAPSHOT_NUMERIC_FIELDS = (
+    "last_price", "previous_close", "open", "day_high", "day_low",
+    "year_high", "year_low", "market_cap", "shares",
+)
 
 
 class YFinanceAdapterError(RuntimeError):
@@ -44,7 +51,13 @@ def installed_version() -> str | None:
 
 
 def _scalar(value: Any) -> Any:
-    if value is None or isinstance(value, (str, bool, int, Decimal)):
+    # yfinance loads pandas; keep the core importable without optional deps.
+    pandas = sys.modules.get("pandas")
+    if pandas is not None and (value is pandas.NA or value is pandas.NaT):
+        return None
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, (dt.datetime, dt.date)):
         return value.isoformat()
@@ -72,18 +85,37 @@ def _scalar(value: Any) -> Any:
     return str(value)
 
 
-def _frame(frame: Any, *, limit_columns: int | None = None) -> dict[str, Any]:
+def _frame(frame: Any, *, limit_columns: int | None = None, text_columns: tuple[str, ...] = ()) -> dict[str, Any]:
     if frame is None:
         return {"orientation": "index-columns", "index": [], "columns": [], "rows": []}
     columns = list(getattr(frame, "columns", []))
+    index = list(getattr(frame, "index", []))
+    width = len(columns)
+    rows: list[list[Any]] = []
+    # Iterate original positions: label-based .loc can duplicate or substitute
+    # rows/columns when labels repeat. Limit only after validating full width.
+    for row in frame.itertuples(index=False, name=None):
+        if len(row) != width:
+            raise YFinanceAdapterError("malformed_response", "yfinance table row width does not match its columns")
+        normalized = [_scalar(value) for value in row]
+        for column, value in zip(columns, normalized):
+            if value is None:
+                continue
+            if column in text_columns:
+                valid = isinstance(value, str)
+            else:
+                valid = not isinstance(value, bool) and isinstance(value, (int, Decimal))
+            if not valid:
+                raise YFinanceAdapterError("malformed_response", "yfinance table cell has an invalid type for its column")
+        rows.append(normalized if limit_columns is None else normalized[:limit_columns])
+    # pandas emits no tuples for zero columns with index=False, even when
+    # the index has entries. Represent those positions as empty rows.
+    if width == 0 and not rows:
+        rows = [[] for _ in index]
+    if len(rows) != len(index):
+        raise YFinanceAdapterError("malformed_response", "yfinance table row count does not match its index")
     if limit_columns is not None:
         columns = columns[:limit_columns]
-    index = list(getattr(frame, "index", []))
-    rows: list[list[Any]] = []
-    if columns and index:
-        selected = frame.loc[index, columns] if hasattr(frame, "loc") else frame
-        for row in selected.itertuples(index=False, name=None):
-            rows.append([_scalar(value) for value in row[: len(columns)]])
     return {
         "orientation": "index-columns",
         "index": [_scalar(value) for value in index],
@@ -92,14 +124,35 @@ def _frame(frame: Any, *, limit_columns: int | None = None) -> dict[str, Any]:
     }
 
 
+def _index_dates(frame: Any) -> list[str]:
+    if frame is None:
+        return []
+    if not hasattr(frame, "index"):
+        raise YFinanceAdapterError("malformed_response", "yfinance dated table has no index")
+    dates = []
+    for value in frame.index:
+        label = _scalar(value)
+        try:
+            if not isinstance(label, str) or dt.date.fromisoformat(label[:10]).isoformat() != label[:10]:
+                raise ValueError("invalid date")
+            if len(label) != 10:
+                if len(label) <= 10 or label[10] not in {"T", " "}:
+                    raise ValueError("invalid timestamp")
+                dt.datetime.fromisoformat(label)
+        except (ValueError, TypeError) as exc:
+            raise YFinanceAdapterError("malformed_response", "yfinance table index contains an invalid date") from exc
+        # Daily market dates use the timestamp's own calendar date, not UTC.
+        dates.append(label[:10])
+    return dates
+
+
 def _filter_frame_dates(frame: Any, start: str | None, end: str | None) -> Any:
-    if frame is None or not hasattr(frame, "loc") or (start is None and end is None):
+    dates = _index_dates(frame)
+    if frame is None or (start is None and end is None):
         return frame
-    mask = [
-        (start is None or str(_scalar(value))[:10] >= start)
-        and (end is None or str(_scalar(value))[:10] <= end)
-        for value in frame.index
-    ]
+    if not hasattr(frame, "loc"):
+        raise YFinanceAdapterError("malformed_response", "yfinance dated table cannot be filtered")
+    mask = [(start is None or date >= start) and (end is None or date <= end) for date in dates]
     return frame.loc[mask]
 
 
@@ -144,6 +197,16 @@ class YFinanceClient:
         for attempt in range(1, 4):
             try:
                 data = self._execute(operation, symbol, normalized)
+                if operation == "snapshot":
+                    available = any(data.get(key) is not None for key in SNAPSHOT_NUMERIC_FIELDS)
+                elif operation in {"history", "valuations"} or operation.startswith("financials."):
+                    available = any(value is not None for row in data["table"]["rows"] for value in row)
+                else:
+                    available = True
+                if not available:
+                    raise YFinanceAdapterError(
+                        "transient_provider_error", f"yfinance {operation} returned no usable data", retryable=True,
+                    )
                 break
             except Exception as exc:
                 if isinstance(exc, YFinanceAdapterError):
@@ -153,9 +216,14 @@ class YFinanceClient:
                     retryable = name in {
                         "ConnectionError",
                         "ReadTimeout",
+                        "ConnectTimeout",
                         "Timeout",
+                        "TimeoutError",
                         "YFRateLimitError",
-                    }
+                    } or (
+                        name == "OperationalError"
+                        and str(exc).strip().lower() in {"database is locked", "database table is locked"}
+                    )
                     error = YFinanceAdapterError(
                         "transient_provider_error" if retryable else "provider_error",
                         f"yfinance {operation} failed: {name}: {str(exc)[:300]}",
@@ -178,7 +246,10 @@ class YFinanceClient:
             "fetched_at": fetched_at,
             "data": data,
         }
-        raw = (json.dumps(export, ensure_ascii=False, indent=2, default=str) + "\n").encode("utf-8")
+        try:
+            raw = (json.dumps(export, ensure_ascii=False, indent=2, default=str, allow_nan=False) + "\n").encode("utf-8")
+        except (UnicodeError, ValueError, TypeError, RecursionError) as exc:
+            raise YFinanceAdapterError("malformed_response", "yfinance data cannot be exported as valid UTF-8 JSON") from exc
         return YFinanceResult(
             operation=operation,
             symbol=symbol,
@@ -208,6 +279,9 @@ class YFinanceClient:
                     "yfinance search returned no quotes",
                     retryable=True,
                 )
+            if any(not isinstance(item, dict) or not isinstance(item.get("symbol"), str)
+                   or not item["symbol"].strip() for item in quotes):
+                raise YFinanceAdapterError("malformed_response", "yfinance search row has an invalid symbol")
             keys = (
                 "symbol",
                 "shortname",
@@ -218,7 +292,7 @@ class YFinanceClient:
                 "typeDisp",
                 "currency",
             )
-            return {"item": [{key: _scalar(item.get(key)) for key in keys} for item in quotes if isinstance(item, dict)]}
+            return {"item": [{key: _scalar(item.get(key)) for key in keys} for item in quotes]}
 
         if symbol is None:
             raise YFinanceAdapterError("usage_error", "symbol is required")
@@ -242,6 +316,10 @@ class YFinanceClient:
                     "shares": "shares",
                 },
             )
+            for key in SNAPSHOT_NUMERIC_FIELDS:
+                value = values[key]
+                if value is not None and (isinstance(value, bool) or not isinstance(value, (int, Decimal))):
+                    raise YFinanceAdapterError("malformed_response", f"yfinance snapshot {key} must be numeric or missing")
             return {"symbol": symbol, **values}
         if operation == "history":
             end_inclusive = dt.date.fromisoformat(str(parameters["end"]))
@@ -253,6 +331,9 @@ class YFinanceClient:
                 actions=True,
                 repair=False,
             )
+            dates = _index_dates(frame)
+            if any(date < str(parameters["start"]) or date > str(parameters["end"]) for date in dates):
+                raise YFinanceAdapterError("malformed_response", "yfinance history date is outside the requested range")
             return {
                 "symbol": symbol,
                 "adjustment": "auto-adjusted" if parameters.get("adjust") != "none" else "unadjusted",
@@ -285,5 +366,5 @@ class YFinanceClient:
                 str(parameters["start"]) if "start" in parameters else None,
                 str(parameters["end"]) if "end" in parameters else None,
             )
-            return {"symbol": symbol, "table": _frame(frame)}
+            return {"symbol": symbol, "table": _frame(frame, text_columns=("Dividends FX",))}
         raise YFinanceAdapterError("usage_error", f"unsupported yfinance operation: {operation}")

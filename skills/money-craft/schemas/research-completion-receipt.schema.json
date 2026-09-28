@@ -26,6 +26,26 @@
       "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
     },
     "provider_gaps": {"type": "array", "items": {"type": "string"}},
+    "assessment": {
+      "type": "object",
+      "required": [
+        "artifact_integrity",
+        "receipt_integrity",
+        "evidence_coverage",
+        "citation_binding",
+        "claim_support",
+        "source_freshness"
+      ],
+      "properties": {
+        "artifact_integrity": {"const": "VERIFIED"},
+        "receipt_integrity": {"const": "VERIFIED"},
+        "evidence_coverage": {"enum": ["COMPLETE", "PARTIAL"]},
+        "citation_binding": {"const": "VERIFIED"},
+        "claim_support": {"const": "UNVERIFIED"},
+        "source_freshness": {"const": "UNVERIFIED"}
+      },
+      "additionalProperties": false
+    },
     "automatic_trading": {"const": false}
   },
   "additionalProperties": false

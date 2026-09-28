@@ -47,14 +47,14 @@ def _home(home: Path | None) -> Path:
     return (Path.home() if home is None else home).expanduser().resolve()
 
 
-def _absolute_override(environment: Mapping[str, str], name: str) -> Path | None:
+def _absolute_override(environment: Mapping[str, str], name: str, *, resolve: bool = True) -> Path | None:
     value = environment.get(name, "").strip()
     if not value:
         return None
     path = Path(value).expanduser()
     if not path.is_absolute():
         raise RuntimePathError(f"{name} must be an absolute path")
-    return path.resolve(strict=False)
+    return path.resolve(strict=False) if resolve else path
 
 
 def config_home(
@@ -165,13 +165,13 @@ def load_explicit_env_file(environment: MutableMapping[str, str] | None = None) 
     """
 
     environ = os.environ if environment is None else environment
-    path = _absolute_override(environ, ENV_FILE_ENV)
+    path = _absolute_override(environ, ENV_FILE_ENV, resolve=False)
     if path is None:
         return None
     try:
         metadata = path.lstat()
-    except FileNotFoundError as exc:
-        raise RuntimePathError(f"{ENV_FILE_ENV} does not exist") from exc
+    except OSError as exc:
+        raise RuntimePathError(f"cannot inspect {ENV_FILE_ENV}") from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise RuntimePathError(f"{ENV_FILE_ENV} must select a regular file, not a symlink")
     if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
@@ -181,9 +181,22 @@ def load_explicit_env_file(environment: MutableMapping[str, str] | None = None) 
     if metadata.st_size < 1 or metadata.st_size > MAX_ENV_FILE_BYTES:
         raise RuntimePathError(f"{ENV_FILE_ENV} file has an invalid size")
     try:
-        text = path.read_text(encoding="utf-8")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if ((opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or opened.st_uid != metadata.st_uid
+                    or stat.S_IMODE(opened.st_mode) & 0o077):
+                raise RuntimePathError(f"{ENV_FILE_ENV} changed or is unsafe to read")
+            raw = stream.read(MAX_ENV_FILE_BYTES + 1)
+        if not 1 <= len(raw) <= MAX_ENV_FILE_BYTES:
+            raise RuntimePathError(f"{ENV_FILE_ENV} file has an invalid size")
+        text = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise RuntimePathError(f"cannot read {ENV_FILE_ENV}") from exc
+    pending: dict[str, str] = {}
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -195,9 +208,10 @@ def load_explicit_env_file(environment: MutableMapping[str, str] | None = None) 
         key, raw_value = line.split("=", 1)
         key = key.strip()
         if not ENV_NAME_RE.fullmatch(key) or key not in ALLOWED_ENV_FILE_KEYS:
-            raise RuntimePathError(f"env file line {line_number} uses unsupported key {key!r}")
+            raise RuntimePathError(f"env file line {line_number} uses an unsupported key")
         value = _parse_env_value(raw_value, line_number=line_number)
-        if value and not environ.get(key):
-            environ[key] = value
+        if value and key not in environ:
+            pending.setdefault(key, value)
+    environ.update(pending)
     environ[ENV_FILE_ACTIVE_ENV] = str(path)
     return path

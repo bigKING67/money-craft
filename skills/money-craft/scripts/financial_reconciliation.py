@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from financial_rigor import CONTEXT, CalculationError, calculate, decimal_value, relative_error
+from financial_rigor import CalculationError, calculate, decimal_value, relative_error
 import report_audit
 
 SCHEMA = "money-craft.financial-reconciliation.v1"
@@ -80,7 +80,7 @@ def audit_assessment(
         errors.append(f"{label} must be an object")
         return
     status = payload.get("status")
-    if status not in allowed_statuses:
+    if not isinstance(status, str) or status not in allowed_statuses:
         errors.append(f"{label}.status is invalid")
     elif status == "unverified":
         errors.append(f"{label}.status must be resolved before finalization")
@@ -112,7 +112,7 @@ def audit_assessment(
         for field in item_fields:
             nonempty_text(item.get(field), f"{item_label}.{field}", errors)
         evidence_state = item.get("evidence_state")
-        if evidence_state not in {"OBSERVED", "INFERRED", "UNVERIFIED"}:
+        if not isinstance(evidence_state, str) or evidence_state not in {"OBSERVED", "INFERRED", "UNVERIFIED"}:
             errors.append(f"{item_label}.evidence_state is invalid")
         elif evidence_state == "UNVERIFIED":
             errors.append(f"{item_label}.evidence_state must be resolved before finalization")
@@ -173,7 +173,7 @@ def audit_payload(
                 errors.append(f"{field} must match plan.json")
 
     required_checks = payload.get("required_checks")
-    if not isinstance(required_checks, list) or any(kind not in CHECK_INPUTS for kind in required_checks):
+    if not isinstance(required_checks, list) or any(not isinstance(kind, str) or kind not in CHECK_INPUTS for kind in required_checks):
         errors.append("required_checks contains an unsupported reconciliation kind")
         required_checks = []
     elif len(set(required_checks)) != len(required_checks):
@@ -199,13 +199,13 @@ def audit_payload(
         role = item.get("role")
         period = item.get("period")
         basis_kind = item.get("basis")
-        if role not in {"current", "comparison"} or role in seen_roles:
+        if not isinstance(role, str) or role not in {"current", "comparison"} or role in seen_roles:
             errors.append(f"{label}.role must be unique current or comparison")
         else:
             seen_roles.add(role)
         if not isinstance(period, str) or not PERIOD_RE.fullmatch(period):
             errors.append(f"{label}.period is invalid")
-        if basis_kind not in {"reported", "restated", "comparable-estimate", "unverified"}:
+        if not isinstance(basis_kind, str) or basis_kind not in {"reported", "restated", "comparable-estimate", "unverified"}:
             errors.append(f"{label}.basis is invalid")
         elif basis_kind == "unverified":
             errors.append(f"{label}.basis must be resolved before finalization")
@@ -219,7 +219,7 @@ def audit_payload(
                 calculation_id = calculation.get("id")
                 if (
                     not isinstance(calculation_id, str)
-                    or not re.fullmatch(r"C\d{2,4}", calculation_id)
+                    or not re.fullmatch(r"C\d{2,7}", calculation_id)
                     or calculation_id in seen_calculation_ids
                 ):
                     errors.append(f"{label}.calculation.id must be a unique Cxx identifier")
@@ -258,7 +258,8 @@ def audit_payload(
     if seen_roles != {"current", "comparison"}:
         errors.append("period_basis must contain current and comparison roles")
     if isinstance(expected_basis, list):
-        actual_roles = {item.get("role"): item.get("period") for item in basis if isinstance(item, dict)}
+        actual_roles = {item.get("role"): item.get("period") for item in basis
+                        if isinstance(item, dict) and isinstance(item.get("role"), str)}
         expected_roles = {item.get("role"): item.get("period") for item in expected_basis if isinstance(item, dict)}
         if actual_roles != expected_roles:
             errors.append("period_basis roles and periods must match plan.json")
@@ -268,7 +269,7 @@ def audit_payload(
         errors.append("restatement_assessment must be an object")
     else:
         status = restatement.get("status")
-        if status not in {"none-disclosed", "restated", "unverified"}:
+        if not isinstance(status, str) or status not in {"none-disclosed", "restated", "unverified"}:
             errors.append("restatement_assessment.status is invalid")
         elif status == "unverified":
             errors.append("restatement_assessment.status must be resolved before finalization")
@@ -280,7 +281,7 @@ def audit_payload(
         )
         nonempty_text(restatement.get("notes"), "restatement_assessment.notes", errors)
         if status == "restated" and not any(
-            isinstance(item, dict) and item.get("basis") in {"restated", "comparable-estimate"} for item in basis
+            isinstance(item, dict) and item.get("basis") in ("restated", "comparable-estimate") for item in basis
         ):
             errors.append("a restated assessment requires a restated or comparable-estimate basis row")
 
@@ -307,7 +308,7 @@ def audit_payload(
         else:
             seen_disclosures.add(source_id)
         status = item.get("status")
-        if status not in {"not-triggered", "imported", "unverified"}:
+        if not isinstance(status, str) or status not in {"not-triggered", "imported", "unverified"}:
             errors.append(f"{label}.status is invalid")
         elif status == "unverified":
             errors.append(f"{label}.status must be resolved before finalization")
@@ -339,7 +340,7 @@ def audit_payload(
             errors.append(f"{label}.id must be a unique FRxx identifier")
         else:
             seen_ids.add(check_id)
-        if kind not in CHECK_INPUTS:
+        if not isinstance(kind, str) or kind not in CHECK_INPUTS:
             errors.append(f"{label}.kind is unsupported")
             continue
         if kind in seen_kinds:
@@ -348,8 +349,41 @@ def audit_payload(
         period = item.get("period")
         if not isinstance(period, str) or not PERIOD_RE.fullmatch(period):
             errors.append(f"{label}.period is invalid")
+        elif period not in [row.get("period") for row in basis if isinstance(row, dict)]:
+            errors.append(f"{label}.period must belong to period_basis")
+        if kind == "quarter-from-ytd" and period not in [
+            row.get("period") for row in basis if isinstance(row, dict) and row.get("role") == "current"
+        ]:
+            errors.append(f"{label}.period must match current period_basis for quarter-from-ytd")
         nonempty_text(item.get("unit"), f"{label}.unit", errors)
         source_ids(item.get("source_ids"), f"{label}.source_ids", errors, allowed_source_ids=allowed_source_ids)
+        adjustments = []
+        if "cash_adjustments" in item:
+            if kind != "cash-balance-tie":
+                errors.append(f"{label}.cash_adjustments is only valid for cash-balance-tie")
+            raw_adjustments = item["cash_adjustments"]
+            if not isinstance(raw_adjustments, list) or not 1 <= len(raw_adjustments) <= 20:
+                errors.append(f"{label}.cash_adjustments must contain 1 to 20 items")
+            else:
+                adjustment_ids: set[str] = set()
+                for adjustment_index, adjustment in enumerate(raw_adjustments):
+                    adjustment_label = f"{label}.cash_adjustments[{adjustment_index}]"
+                    if not isinstance(adjustment, dict) or set(adjustment) != {"id", "amount", "reason", "source_ids"}:
+                        errors.append(f"{adjustment_label} must contain exactly id, amount, reason, source_ids")
+                        continue
+                    adjustment_id = adjustment["id"]
+                    if not isinstance(adjustment_id, str) or not re.fullmatch(r"CA\d{2,4}", adjustment_id) or adjustment_id in adjustment_ids:
+                        errors.append(f"{adjustment_label}.id must be a unique CAxx identifier")
+                    else:
+                        adjustment_ids.add(adjustment_id)
+                    reason = nonempty_text(adjustment["reason"], f"{adjustment_label}.reason", errors)
+                    sources = source_ids(adjustment["source_ids"], f"{adjustment_label}.source_ids", errors, allowed_source_ids=allowed_source_ids)
+                    try:
+                        amount = decimal_value(adjustment["amount"])
+                    except CalculationError as exc:
+                        errors.append(f"{adjustment_label}.amount: {exc}")
+                        continue
+                    adjustments.append({"id": adjustment_id, "amount": str(amount), "reason": reason, "source_ids": sources})
         inputs = item.get("inputs")
         names = CHECK_INPUTS[kind]
         if not isinstance(inputs, dict) or set(inputs) != set(names):
@@ -362,12 +396,12 @@ def audit_payload(
                 raise CalculationError("tolerance must be between 0 and 0.05")
             if kind == "balance-sheet-equation":
                 lhs = values["assets"]
-                rhs = CONTEXT.add(values["liabilities"], values["equity"])
+                rhs = calculate("add", [values["liabilities"], values["equity"]])
             elif kind == "cash-balance-tie":
-                lhs = values["balance_sheet_cash"]
+                lhs = calculate("add", [values["balance_sheet_cash"], *[Decimal(row["amount"]) for row in adjustments]])
                 rhs = values["cash_flow_ending_cash"]
             else:
-                lhs = CONTEXT.subtract(values["current_ytd"], values["previous_period_ytd"])
+                lhs = calculate("subtract", [values["current_ytd"], values["previous_period_ytd"]])
                 rhs = values["reported_quarter"]
             error = relative_error(lhs, rhs)
             passed = error <= tolerance
@@ -383,6 +417,8 @@ def audit_payload(
                     "passed": passed,
                 }
             )
+            if kind == "cash-balance-tie" and "cash_adjustments" in item:
+                checks[-1].update(balance_sheet_cash=str(values["balance_sheet_cash"]), cash_adjustments=adjustments)
             if not passed:
                 errors.append(f"{check_id}: {kind} does not reconcile")
         except (CalculationError, KeyError, TypeError) as exc:
@@ -458,10 +494,10 @@ def audit_file(
         raw = path.read_bytes()
         if SECRET_RE.search(raw):
             raise ReconciliationError("secret-like material is not allowed")
-        payload = json.loads(raw.decode("utf-8"))
+        payload = json.loads(raw.decode("utf-8"), parse_float=Decimal)
     except ReconciliationError as exc:
         return {"schema": AUDIT_SCHEMA, "valid": False, "checks": [], "warnings": [], "errors": [str(exc)]}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         return {
             "schema": AUDIT_SCHEMA,
             "valid": False,

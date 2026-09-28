@@ -7,6 +7,20 @@ tracking. A-share support is one provider adapter, not the product boundary.
 It is a controlled derivative of AI Berkshire and adds a consistent runtime
 contract for Codex, Pi, Claude, and Grok.
 
+## Daily-use baseline
+
+Start with the [daily-use guide](docs/daily-use.md) and
+[capability/evidence matrix](docs/capability-evidence-matrix.md). The
+[2026-09-19 baseline receipt](acceptance/daily-use-baseline-20260919.json)
+binds its historical Skill/install parity and bounded research evidence.
+This is a working-tree use baseline, not a release or investment-performance claim.
+
+The subsequent [Amazon thesis lifecycle check](docs/amazon-thesis-lifecycle-20260919.md)
+preserves real tracking revisions and the first full-host timeout. The subsequent
+[company-research closeout](docs/amazon-company-research-closeout-20260919.md)
+verifies the installed patch, research sealing, and the full natural-language question
+on the same frozen Skill. Investment valuation remains unverified.
+
 ## Runtime boundaries
 
 - Canonical skill: `skills/money-craft/`
@@ -285,6 +299,22 @@ The diff fails closed on identity changes, time reversal, rewritten update
 history, missing current update rows, or an invalid report/financial audit. Its
 signal is a review priority, never an order or trading instruction.
 
+### Earnings-to-thesis update
+
+Compare source-bound adjacent fiscal periods, review dated expectations when
+available, reconcile three earnings-multiple valuation bridges, and prepare a
+hash-bound thesis proposal:
+
+```bash
+python3 skills/money-craft/scripts/money_craft.py earnings review \
+  --input <earnings-update-input.json> --previous-thesis <audited-thesis.md> --json
+```
+
+See the [input and review contract](skills/money-craft/references/earnings-review.md)
+and the [two-filing historical acceptance case](acceptance/earnings/README.md).
+The proposal requires review before entering the existing tracking workflow;
+positive financial changes do not automatically establish thesis support.
+
 ### Company-level tracking archive
 
 Persist an audited thesis update next to the company's dated research folders:
@@ -391,6 +421,9 @@ isolated acceptance test. Every installation is a symlink-free atomic copy with
 
 ## Validation
 
+For bounded test environments, automatic dependency cleanup, and a read-only
+storage inventory, see [local test storage management](docs/test-storage.md).
+
 ```bash
 npm test
 npm run validate
@@ -423,6 +456,24 @@ must not be claimed from static or model-free validation alone.
 
 ## Upstream updates
 
+Money Craft will serve both a Skill and an application, starting with the Skill
+and a shared research core. See the [upstream strategy and maintenance workflow](docs/upstream-strategy.md)
+and the [155-page MyInvestPilot documentation review](docs/upstreams/myinvestpilot.md).
+References are evaluated per capability; they are not automatically installed dependencies.
+
+```bash
+python3 scripts/upstream_status.py --all --json
+python3 scripts/upstream_status.py --all --fetch --json
+python3 scripts/upstream_status.py --source myinvestpilot --snapshot /tmp/myinvestpilot-capture.json --json
+```
+
+The multi-source interface returns v2 results: cached records, pending reviews,
+fresh observations and unavailable sources stay distinct. MyInvestPilot requires
+a complete browser catalog capture; the CLI does not mistake partial server HTML
+for a full directory. Exit 2 means cached/stale/pending review, exit 1 means an
+input or observation failure, and exit 0 means every selected source is current.
+Neither checking nor snapshot conversion advances review/adoption records.
+
 AI Berkshire is pinned under `upstreams/ai-berkshire`. Run:
 
 ```bash
@@ -437,3 +488,7 @@ record reviewed source, accounted exclusions, reimplemented mechanisms, and
 non-absorbed decisions. Advancing the review baseline never moves the submodule
 pin or pretends generated packages, reports, or account records were absorbed.
 Never auto-merge upstream changes into the canonical skill.
+
+财报前瞻可先用 `earnings seal-preview` 保存独立基线，再用 `earnings replay-preview` 对照实际结果和催化剂证据。预期按分析师/管理层/一致预期分别保存，历史重建明确标注，逾期事件不会自动视为兑现；详见 [财报研究合同](skills/money-craft/references/earnings-review.md)。
+
+当前建设优先级：先完善 Skill 与共用研究核心，完成证据、计算、封存和跨模块流程的集中审查、整改及端到端验收。应用建设是核心能力成熟后的独立后续阶段，不因一批测试通过而自动启动。`scripts/earnings_smoke.py <CLI路径>` 可离线验证源码或临时安装包的财报链，使用明确标记的合成数据，不提供投资效果证明。
