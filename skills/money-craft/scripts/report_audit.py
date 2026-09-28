@@ -15,7 +15,7 @@ SECURITY_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]{1,15}:[A-Z0-9][A-Z0-9._-]{0,31}
 CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 THSCODE_MARKETS = {"SH": "CN-SH", "SZ": "CN-SZ", "BJ": "CN-BJ"}
 SOURCE_RE = re.compile(r"\[(S\d{2,4})\]")
-SOURCE_DEFINITION_RE = re.compile(r"^\s*-\s+\[(S\d{2,4})\]\s+(.+?)\s*$", re.MULTILINE)
+SOURCE_DEFINITION_RE = re.compile(r"^[ \t]*-[ \t]+\[(S\d{2,4})\][ \t]*(.*?)[ \t]*$", re.MULTILINE)
 PLACEHOLDER_RE = re.compile(r"\{\{[^{}]+\}\}")
 REQUIRED_HEADINGS = {
     "结论",
@@ -61,10 +61,9 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str, list[str]]:
 
 def valid_iso_date(value: str) -> bool:
     try:
-        dt.date.fromisoformat(value)
+        return dt.date.fromisoformat(value).isoformat() == value
     except ValueError:
         return False
-    return True
 
 
 def valid_iso_datetime(value: str) -> bool:
@@ -96,12 +95,15 @@ def security_id_from_metadata(metadata: dict[str, str]) -> str:
     return security_id
 
 
-def extract_section(body: str, heading: str) -> str:
-    pattern = re.compile(
+def section_pattern(heading: str) -> re.Pattern[str]:
+    return re.compile(
         rf"^##\s+{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^##\s+|\Z)",
         re.MULTILINE | re.DOTALL,
     )
-    match = pattern.search(body)
+
+
+def extract_section(body: str, heading: str) -> str:
+    match = section_pattern(heading).search(body)
     return match.group("body") if match else ""
 
 
@@ -133,7 +135,12 @@ def audit_text(text: str) -> dict[str, Any]:
         errors.append("data_cutoff must be an ISO-8601 timestamp")
     if not CURRENCY_RE.fullmatch(metadata.get("base_currency", "")):
         errors.append("base_currency must be a three-letter uppercase currency code")
-    headings = set(re.findall(r"^##\s+(.+?)\s*$", body, re.MULTILINE))
+    heading_list = re.findall(r"^##\s+(.+?)\s*$", body, re.MULTILINE)
+    headings = set(heading_list)
+    contract_headings = REQUIRED_HEADINGS | ({"核心假设", "更新记录"} if metadata.get("schema") == "money-craft.thesis.v1" else set())
+    for heading in sorted(contract_headings):
+        if heading_list.count(heading) > 1:
+            errors.append(f"duplicate contract section: {heading}")
     for heading in sorted(REQUIRED_HEADINGS - headings):
         errors.append(f"missing required section: {heading}")
     placeholders = PLACEHOLDER_RE.findall(text)
@@ -153,7 +160,7 @@ def audit_text(text: str) -> dict[str, Any]:
         elif not (re.search(r"https?://", target) or "`" in target or "/" in target):
             warnings.append(f"{source_id}: source has no URL or local path")
 
-    body_without_index = body[: body.find("## 来源索引")] if "## 来源索引" in body else body
+    body_without_index = section_pattern("来源索引").sub("", body)
     citations = set(SOURCE_RE.findall(body_without_index))
     for source_id in sorted(citations - definitions.keys()):
         errors.append(f"unresolved source citation: {source_id}")

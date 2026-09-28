@@ -9,7 +9,7 @@ description: 面向全球市场的证据优先投资研究与理财决策支持�
 
 ## 路由
 
-先读 [references/routing.md](references/routing.md)，只加载当前模式需要的参考：
+先确认宿主 AGENTS 或已声明的投资治理规则是否要求外部路由：有要求时，先读该规则并按 [references/routing.md](references/routing.md) 完成路由回执核对，再进入分析；不能因用户显式指定本 Skill、任务是 quick/chat 或合成演练就跳过宿主要求。“离线、仅使用给定材料、不归档”限制事实来源或交付，不自动豁免宿主要求的本地流程校验；外部路由指 Skill 之外的路由工具，不等于联网补证。用户明确禁止相关工具或命令时遵循其限制，按 routing.md 报告未完成及影响，不暗中执行或自称豁免。宿主没有外部路由要求时，只使用本 Skill 的模式表，不引入额外工具依赖。只加载当前模式需要的参考：
 
 - 快速排雷或质量筛选：[references/screening.md](references/screening.md)；涉及数字时再读 [references/financial-data-and-evidence.md](references/financial-data-and-evidence.md)，不要读取完整公司研究运行合同。
 - 完整公司研究：[references/company-research.md](references/company-research.md)；它包含确定性研究入口、可恢复运行和完成收据门禁。
@@ -35,6 +35,7 @@ description: 面向全球市场的证据优先投资研究与理财决策支持�
 5. 区分 `OBSERVED`、`INFERRED`、`HYPOTHESIZED`、`UNVERIFIED`。资料不足时降低置信度，不补齐看似完整的数字。
 6. 明确给出结论、反方证据、证伪条件和下一次需要验证的事实。筛选通过不等于建议买入。
 7. 任何账户访问、下单、发布、消息或外部写操作都需要当前明确授权；本 Skill 本身不执行交易。
+8. 宿主要求外部路由时，先按 `routing.md` 读取工具参数合同；只有命令成功退出且返回有效路由结果才算完成。最终回答前检查该回执，参数错误须纠正重跑；无法完成时明确标为路由未完成，不把已尝试的调用描述为成功，也不启动依赖该路由的后续阶段。
 
 ## 按需操作合同
 

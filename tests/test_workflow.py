@@ -70,6 +70,16 @@ NEXT_UPDATE = "| 2026-11-01 | H01 转为 WEAKENED | 下调 | 需要复核 | [S02
 
 
 class CompanyResearchPlanTests(unittest.TestCase):
+    def test_plan_rejects_inconsistent_ashare_calendar_and_future_annual(self):
+        for fields in ({"latest_report": "2099-4", "latest_report_end": "2026-06-30"},
+                       {"latest_report": "2026-2", "latest_report_end": "2026-06-29"},
+                       {"latest_report": "2026-2", "latest_annual_report": "2099-4"}):
+            with self.subTest(fields=fields):
+                with self.assertRaises(workflow.WorkflowError):
+                    workflow.company_research_plan(security="Example", thscode="600519.SH", as_of="2026-08-23",
+                        provider={"mode": "disabled", "configured": False}, today=dt.date(2026, 8, 23), **fields)
+
+
     def test_global_security_declares_unconfigured_yfinance_without_operations(self) -> None:
         plan = workflow.company_research_plan(
             security="NVIDIA Corporation",
@@ -171,7 +181,7 @@ class CompanyResearchPlanTests(unittest.TestCase):
         self.assertEqual(plan["provider_operations"][3]["arguments"]["start"], "2021-08-23")
         self.assertEqual(
             [item["id"] for item in plan["official_evidence_requirements"]],
-            ["S11", "S12", "S13", "S18", "S19", "S20"],
+            ["S11", "S12", "S13", "S21", "S22", "S18", "S19", "S20"],
         )
         self.assertEqual(
             [item["id"] for item in plan["official_evidence_requirements"] if item["required"]],
@@ -280,6 +290,41 @@ class CompanyResearchPlanTests(unittest.TestCase):
 
 
 class ThesisWorkflowTests(unittest.TestCase):
+    def test_duplicate_contract_sections_cannot_hide_broken_hypothesis(self):
+        text = thesis_text(as_of="2026-08-23", cutoff="2026-08-23T12:00:00+08:00",
+                           hypothesis_state="SUPPORTED", update_rows=[INITIAL_UPDATE])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for heading in workflow.report_audit.REQUIRED_HEADINGS | {"核心假设", "更新记录"}:
+                with self.subTest(heading=heading):
+                    section = workflow.report_audit.extract_section(text, heading)
+                    candidate = text + "\n## " + heading + "\n" + section.replace("SUPPORTED", "BROKEN")
+                    path = self.write(root, "duplicate.md", candidate)
+                    with self.assertRaises(workflow.WorkflowError):
+                        workflow.load_thesis(path)
+
+
+    def test_diff_detects_fact_and_source_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = thesis_text(as_of="2026-08-23", cutoff="2026-08-23T12:00:00+08:00",
+                              hypothesis_state="SUPPORTED", update_rows=[INITIAL_UPDATE])
+            new = thesis_text(as_of="2026-11-01", cutoff="2026-11-01T12:00:00+08:00",
+                              hypothesis_state="SUPPORTED", update_rows=[INITIAL_UPDATE, NEXT_UPDATE])
+            previous = self.write(root, "previous.md", old)
+            for label, candidate, expected in (
+                ("unchanged", new, "NO_MATERIAL_CHANGE"),
+                ("fact", new.replace("收入由正式报告核验", "收入下降，正式报告已核验"), "CHANGED"),
+                ("source", new.replace("annual.pdf", "restated-annual.pdf"), "CHANGED"),
+            ):
+                with self.subTest(label=label):
+                    current = self.write(root, "current.md", candidate)
+                    result = workflow.thesis_diff(previous, current)
+                    self.assertEqual(result["signal"], expected)
+                    if label == "fact": self.assertTrue(result["sections"]["事实与证据"]["changed"])
+                    if label == "source": self.assertIn("S01", result["sources"]["changed"])
+
+
     def write(self, directory: Path, name: str, text: str) -> Path:
         path = directory / name
         path.write_text(text, encoding="utf-8")

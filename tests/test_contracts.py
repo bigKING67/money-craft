@@ -39,6 +39,8 @@ class RepositoryContractTests(unittest.TestCase):
     def test_workflow_schemas_are_packaged(self) -> None:
         schema_root = ROOT / "skills" / "money-craft" / "schemas"
         expected = {
+            "earnings-update-input.schema.json": "money-craft.earnings-update-input.v1",
+            "earnings-update.schema.json": "money-craft.earnings-update.v1",
             "company-research-plan.schema.json": "money-craft.company-research-plan.v1",
             "financial-reconciliation.schema.json": "money-craft.financial-reconciliation.v1",
             "financial-reconciliation-audit.schema.json": "money-craft.financial-reconciliation-audit.v1",
@@ -60,6 +62,10 @@ class RepositoryContractTests(unittest.TestCase):
             "tracking-run-state.schema.json": "money-craft.tracking-run-state.v1",
             "tracking-state.schema.json": "money-craft.tracking-state.v1",
             "tracking-status.schema.json": "money-craft.tracking-status.v1",
+            "tracking-state.v2.schema.json": "money-craft.tracking-state.v2",
+            "tracking-current.v2.schema.json": "money-craft.tracking-current.v2",
+            "tracking-revision.v2.schema.json": "money-craft.tracking-revision.v2",
+            "tracking-status.v2.schema.json": "money-craft.tracking-status.v2",
             "tracking-verify.schema.json": "money-craft.tracking-verify.v1",
         }
         for filename, schema_name in expected.items():
@@ -139,12 +145,9 @@ class RepositoryContractTests(unittest.TestCase):
     def test_report_runtime_has_a_real_ci_smoke_gate(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("  report-render:\n", workflow)
-        self.assertIn(
-            "python3 -m pip install -r skills/money-craft/requirements-report.txt",
-            workflow,
-        )
-        self.assertIn("python3 -m unittest tests.test_report_renderer -v", workflow)
-        self.assertIn("python3 scripts/report_smoke.py", workflow)
+        self.assertIn("python3 scripts/test_environment.py --runtime report", workflow)
+        self.assertIn('"$MONEY_CRAFT_REPORT_PYTHON" -m unittest tests.test_report_renderer -v', workflow)
+        self.assertIn('"$MONEY_CRAFT_REPORT_PYTHON" scripts/report_smoke.py', workflow)
 
     def test_runtime_paths_are_xdg_split_and_dotenv_is_explicit_only(self) -> None:
         runtime = (ROOT / "skills" / "money-craft" / "scripts" / "runtime_paths.py").read_text(

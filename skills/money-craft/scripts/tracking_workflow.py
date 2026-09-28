@@ -84,7 +84,7 @@ def read_json(path: Path, label: str) -> dict[str, Any]:
         raise TrackingError("missing_artifact", f"{label} is missing or is not a regular file: {path}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise TrackingError("invalid_artifact", f"cannot read {label}: {exc}") from exc
     if not isinstance(payload, dict):
         raise TrackingError("invalid_artifact", f"{label} must be a JSON object")
@@ -184,7 +184,7 @@ def tracking_lock(root: Path) -> Iterator[None]:
 
 def parse_current(root: Path) -> dict[str, Any]:
     current = read_json(root / "current.json", "tracking current pointer")
-    if current.get("schema") != "money-craft.tracking-current.v1":
+    if current.get("schema") not in {"money-craft.tracking-current.v1", "money-craft.tracking-current.v2"}:
         raise TrackingError("invalid_current", "current.json has an unsupported schema")
     revision_id = current.get("tracking_revision")
     relative = current.get("path")
@@ -236,9 +236,15 @@ def inherited_source_binding(previous: Path, previous_sha256: str) -> dict[str, 
     return None
 
 
-def health_contract(thesis: dict[str, Any]) -> dict[str, Any]:
+def health_contract(thesis: dict[str, Any], *, legacy: bool = False) -> dict[str, Any]:
     hypothesis_states = {record["ID"]: record["状态"] for record in thesis["hypotheses"]}
     red_line_states = {record["ID"]: record["当前状态"] for record in thesis["red_lines"]}
+    if (not hypothesis_states or not red_line_states
+            or any(value not in research_workflow.HYPOTHESIS_STATES for value in hypothesis_states.values())
+            or any(value not in research_workflow.RED_LINE_STATES for value in red_line_states.values())):
+        raise TrackingError("invalid_health_input", "health requires nonempty, recognized hypothesis and red-line states")
+    unverified = "UNVERIFIED" in hypothesis_states.values() or "UNVERIFIED" in red_line_states.values()
+    watch = "WATCH" in red_line_states.values()
     broken = sum(value == "BROKEN" for value in hypothesis_states.values())
     damaged = sum(value == "DAMAGED" for value in hypothesis_states.values())
     weakened = sum(value == "WEAKENED" for value in hypothesis_states.values())
@@ -250,8 +256,14 @@ def health_contract(thesis: dict[str, Any]) -> dict[str, Any]:
         status = "DAMAGED"
     elif weakened:
         status = "WEAKENED"
+    elif not legacy and unverified:
+        status = "UNVERIFIED"
+    elif not legacy and watch:
+        status = "WATCH"
     else:
         status = "SUPPORTED"
+    if not legacy and unverified:
+        score = None
     terms: list[str] = []
     for count, label, penalty in (
         (broken, "broken hypotheses", 3),
@@ -265,7 +277,7 @@ def health_contract(thesis: dict[str, Any]) -> dict[str, Any]:
         "score": score,
         "maximum": 10,
         "status": status,
-        "formula": "10" if not terms else "10 - " + " - ".join(terms),
+        "formula": "UNVERIFIED: incomplete hypothesis or red-line evidence" if score is None else "max(1, " + ("10" if not terms else "10 - " + " - ".join(terms)) + ")",
         "hypotheses": hypothesis_states,
         "red_lines": red_line_states,
     }
@@ -274,7 +286,7 @@ def health_contract(thesis: dict[str, Any]) -> dict[str, Any]:
 def initial_state(thesis: dict[str, Any], *, as_of: str, source_research: dict[str, Any] | None) -> dict[str, Any]:
     health = health_contract(thesis)
     state: dict[str, Any] = {
-        "schema": "money-craft.tracking-state.v1",
+        "schema": "money-craft.tracking-state.v2",
         "security": thesis["metadata"]["security"],
         "security_id": thesis["metadata"]["security_id"],
         "as_of": as_of,
@@ -302,7 +314,8 @@ def initial_state(thesis: dict[str, Any], *, as_of: str, source_research: dict[s
 
 
 def validate_state(state: dict[str, Any], thesis: dict[str, Any], *, final_revision: str | None = None) -> dict[str, Any]:
-    if state.get("schema") != "money-craft.tracking-state.v1":
+    legacy = final_revision is not None and state.get("schema") == "money-craft.tracking-state.v1"
+    if not legacy and state.get("schema") != "money-craft.tracking-state.v2":
         raise TrackingError("invalid_tracking_state", "state.json has an unsupported schema")
     metadata = thesis["metadata"]
     for key in ("security", "security_id", "as_of", "data_cutoff", "base_currency"):
@@ -316,7 +329,7 @@ def validate_state(state: dict[str, Any], thesis: dict[str, Any], *, final_revis
         raise TrackingError("tracking_state_mismatch", "state tracking_revision does not match revision directory")
     if state.get("automatic_trading") is not False:
         raise TrackingError("unsafe_tracking_state", "automatic_trading must be false")
-    expected = health_contract(thesis)
+    expected = health_contract(thesis, legacy=legacy)
     if state.get("hypotheses") != expected["hypotheses"]:
         raise TrackingError("tracking_state_mismatch", "state hypothesis map does not match thesis")
     if state.get("red_lines") != expected["red_lines"]:
@@ -329,6 +342,19 @@ def validate_state(state: dict[str, Any], thesis: dict[str, Any], *, final_revis
             raise TrackingError("tracking_state_mismatch", f"state health does not match thesis: {key}")
     if not isinstance(health.get("formula"), str) or not health["formula"].strip():
         raise TrackingError("invalid_tracking_state", "state health formula is required")
+    if not legacy:
+        review = state.get("next_mandatory_review", {})
+        if not isinstance(review, dict):
+            raise TrackingError("invalid_review_due_date", "next_mandatory_review must be an object")
+        due_date = review.get("due_date")
+        if due_date is not None:
+            try:
+                if not isinstance(due_date, str) or dt.date.fromisoformat(due_date).isoformat() != due_date:
+                    raise ValueError("not an ISO date")
+                if due_date < metadata["as_of"]:
+                    raise ValueError("review due date precedes thesis as_of")
+            except (ValueError, TypeError) as exc:
+                raise TrackingError("invalid_review_due_date", "review due_date must be YYYY-MM-DD on or after thesis as_of") from exc
     if PLACEHOLDER_RE.search(json.dumps(state, ensure_ascii=False)):
         raise TrackingError("unresolved_placeholder", "state.json contains unresolved placeholders")
     return expected
@@ -449,6 +475,31 @@ def load_workspace(workspace: Path) -> tuple[Path, Path, dict[str, Any]]:
     run_state = read_json(workspace_path / "run-state.json", "tracking run state")
     if run_state.get("schema") != "money-craft.tracking-run-state.v1":
         raise TrackingError("invalid_workspace", "run-state.json has an unsupported schema")
+    if run_state.get("run_id") != workspace_path.name:
+        raise TrackingError("invalid_workspace", "run-state run_id must match the workspace name")
+    created_at = run_state.get("created_at")
+    try:
+        if not isinstance(created_at, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)", created_at
+        ):
+            raise ValueError("invalid timestamp")
+        dt.datetime.fromisoformat(created_at.upper().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise TrackingError("invalid_workspace", "run-state created_at must be a valid timestamp with timezone") from exc
+    previous = run_state.get("previous")
+    if (not isinstance(previous, dict) or not isinstance(previous.get("path"), str)
+            or not previous["path"] or previous.get("workspace_copy") != "previous-thesis.md"
+            or not isinstance(previous.get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", previous["sha256"])
+            or not isinstance(run_state.get("update_plan_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", run_state["update_plan_sha256"])):
+        raise TrackingError("invalid_workspace", "run-state previous thesis or update plan binding is invalid")
+    boundary = run_state.get("execution_boundary")
+    if not isinstance(boundary, dict) or any(boundary.get(key) is not False for key in
+            ("network_used", "account_access", "automatic_trading")):
+        raise TrackingError("invalid_workspace", "run-state execution boundary is invalid")
+    if run_state.get("source_research") is not None and not isinstance(run_state["source_research"], dict):
+        raise TrackingError("invalid_workspace", "run-state source_research must be an object or null")
     if run_state.get("workspace") != str(workspace_path):
         raise TrackingError("workspace_mismatch", "run-state workspace binding does not match")
     root_value = run_state.get("tracking_root")
@@ -539,7 +590,7 @@ def make_tracking_manifest(
     provider_captures = state.get("provider_captures")
     source_ids = sorted(provider_captures) if isinstance(provider_captures, dict) else []
     manifest: dict[str, Any] = {
-        "schema": "money-craft.tracking-revision.v1",
+        "schema": "money-craft.tracking-revision.v2",
         "security": thesis["metadata"]["security"],
         "security_id": thesis["metadata"]["security_id"],
         "tracking_revision": revision,
@@ -607,9 +658,21 @@ def remove_staging_directory(path: Path) -> None:
 def finalize_tracking(workspace: Path) -> dict[str, Any]:
     workspace_path, root, run_state = load_workspace(workspace)
     with tracking_lock(root):
+        has_history = (root / "current.json").exists() or any(
+            TRACKING_REVISION_RE.fullmatch(path.name) for path in (root / "revisions").iterdir()
+        )
+        if has_history and not _verify_tracking_locked(root)["valid"]:
+            raise TrackingError(
+                "invalid_history",
+                "existing tracking history is invalid; preserve files and inspect track verify before recovery",
+            )
         thesis, diff, report_result, financial_result, state, card = validate_workspace_inputs(
             workspace_path, run_state
         )
+        if (root / "current.json").exists():
+            latest = current_thesis(root)
+            if sha256_file(latest) != run_state["previous"]["sha256"]:
+                raise TrackingError("stale_previous", "current thesis changed; preserve this workspace and initialize a new update from current")
         revision = next_revision_id(root)
         destination = root / "revisions" / revision
         stage = root / "revisions" / f".{revision}.staging.{uuid.uuid4().hex}"
@@ -617,6 +680,7 @@ def finalize_tracking(workspace: Path) -> dict[str, Any]:
             raise TrackingError("revision_exists", f"tracking revision already exists: {destination}")
         stage.mkdir(mode=0o700)
         published = False
+        pointer_update_started = False
         try:
             state = dict(state)
             state["tracking_revision"] = revision
@@ -643,10 +707,10 @@ def finalize_tracking(workspace: Path) -> dict[str, Any]:
             os.chmod(stage / "SHA256SUMS", 0o600)
             set_tree_read_only(stage, root_read_only=False)
             os.replace(stage, destination)
-            os.chmod(destination, 0o555)
             published = True
+            os.chmod(destination, 0o555)
             current = {
-                "schema": "money-craft.tracking-current.v1",
+                "schema": "money-craft.tracking-current.v2",
                 "security": thesis["metadata"]["security"],
                 "security_id": thesis["metadata"]["security_id"],
                 "tracking_revision": revision,
@@ -657,27 +721,41 @@ def finalize_tracking(workspace: Path) -> dict[str, Any]:
                 "checksums_sha256": sha256_file(destination / "SHA256SUMS"),
                 "thesis_sha256": sha256_file(destination / "thesis.md"),
                 "health_score": health_contract(thesis)["score"],
+                "health_status": health_contract(thesis)["status"],
                 "diff_signal": diff["signal"],
                 "automatic_trading": False,
             }
+            pointer_update_started = True
             write_json_atomic(root / "current.json", current, mode=0o600)
         except Exception:
             if stage.exists():
                 remove_staging_directory(stage)
-            if published and destination.exists():
+            preserve_revision = False
+            if published and pointer_update_started:
+                try:
+                    # A directory fsync can fail after atomic pointer replacement.
+                    # Never remove a revision that current may already reference.
+                    pointer_bytes = (root / "current.json").read_bytes()
+                    preserve_revision = json.loads(pointer_bytes).get("tracking_revision") == revision
+                except FileNotFoundError:
+                    pass
+                except (OSError, ValueError, AttributeError):
+                    preserve_revision = True
+            if published and destination.exists() and not preserve_revision:
                 remove_owned_revision(destination)
             raise
 
         if workspace_path.parent == (root / ".working").resolve() and workspace_path.name == run_state["run_id"]:
             remove_mutable_tree(workspace_path)
     return {
-        "schema": "money-craft.tracking-revision.v1",
+        "schema": "money-craft.tracking-revision.v2",
         "valid": True,
         "tracking_root": str(root),
         "tracking_revision": revision,
         "revision_path": str(destination),
         "current_path": str(root / "current.json"),
         "health_score": current["health_score"],
+        "health_status": current["health_status"],
         "diff_signal": current["diff_signal"],
         "automatic_trading": False,
         "network_used": False,
@@ -720,8 +798,12 @@ def verify_revision(path: Path, *, require_read_only: bool) -> dict[str, Any]:
         plan = read_json(path / "update-plan.json", "thesis update plan")
         stored_report = read_json(path / "thesis-audit.json", "thesis report audit")
         stored_financial = read_json(path / "thesis-financial-audit.json", "thesis financial audit")
-        if manifest.get("schema") != "money-craft.tracking-revision.v1":
+        if manifest.get("schema") not in {"money-craft.tracking-revision.v1", "money-craft.tracking-revision.v2"}:
             errors.append("TRACKING.json has an unsupported schema")
+        if manifest.get("schema", "").rsplit(".", 1)[-1] != state.get("schema", "").rsplit(".", 1)[-1]:
+            errors.append("manifest and state health contract versions differ")
+        if state.get("schema") == "money-craft.tracking-state.v1":
+            warnings.append("legacy health scoring is archival only; use status assessment for current interpretation")
         if manifest.get("tracking_revision") != revision:
             errors.append("TRACKING.json revision does not match directory")
         if manifest.get("result", {}).get("automatic_trading") is not False:
@@ -775,8 +857,10 @@ def verify_revision(path: Path, *, require_read_only: bool) -> dict[str, Any]:
                 if manifest.get(key) != thesis["metadata"].get(key):
                     errors.append(f"manifest does not match thesis field: {key}")
             result = manifest.get("result", {})
-            if expected_health is not None and result.get("health_score") != expected_health["score"]:
-                errors.append("manifest health score does not match thesis")
+            if expected_health is not None:
+                for key in ("score", "status"):
+                    if result.get("health_" + key) != expected_health[key]:
+                        errors.append(f"manifest health {key} does not match thesis")
             if result.get("diff_signal") != diff.get("signal"):
                 errors.append("manifest diff signal does not match thesis diff")
         if not isinstance((path / "card.md").read_text(encoding="utf-8"), str) or PLACEHOLDER_RE.search(
@@ -795,6 +879,12 @@ def verify_revision(path: Path, *, require_read_only: bool) -> dict[str, Any]:
 
 def verify_tracking(tracking_root: Path, *, require_read_only: bool = True) -> dict[str, Any]:
     root = validate_tracking_root(tracking_root, create=False)
+    with tracking_lock(root):
+        return _verify_tracking_locked(root, require_read_only=require_read_only)
+
+
+def _verify_tracking_locked(root: Path, *, require_read_only: bool = True) -> dict[str, Any]:
+    """Read one snapshot while the caller holds the tracking lock."""
     errors: list[str] = []
     warnings: list[str] = []
     revision_root = root / "revisions"
@@ -803,9 +893,19 @@ def verify_tracking(tracking_root: Path, *, require_read_only: bool = True) -> d
     ) if revision_root.is_dir() else []
     if not revisions:
         errors.append("no tracking revisions found")
+    if [path.name for path in revisions] != [f"t{index:04d}" for index in range(1, len(revisions) + 1)]:
+        errors.append("tracking revisions are not contiguous from t0001")
     results = [verify_revision(path, require_read_only=require_read_only) for path in revisions]
     for result in results:
         errors.extend(f"{result['tracking_revision']}: {message}" for message in result["errors"])
+        warnings.extend(f"{result['tracking_revision']}: {message}" for message in result["warnings"])
+    for previous, revision in zip(revisions, revisions[1:]):
+        try:
+            diff = read_json(revision / "thesis-diff.json", "thesis diff")
+            if diff.get("previous", {}).get("sha256") != sha256_file(previous / "thesis.md"):
+                errors.append(f"{revision.name}: previous thesis does not match preceding revision {previous.name}")
+        except (TrackingError, OSError, TypeError, AttributeError) as exc:
+            errors.append(f"{revision.name}: cannot verify previous thesis link: {exc}")
     current: dict[str, Any] | None = None
     try:
         current = parse_current(root)
@@ -827,13 +927,17 @@ def verify_tracking(tracking_root: Path, *, require_read_only: bool = True) -> d
             for key in ("security", "security_id", "as_of", "data_cutoff"):
                 if current.get(key) != manifest.get(key):
                     errors.append(f"current.json does not match manifest field: {key}")
+            if current.get("schema", "").rsplit(".", 1)[-1] != manifest.get("schema", "").rsplit(".", 1)[-1]:
+                errors.append("current and manifest health contract versions differ")
+            if current.get("schema") == "money-craft.tracking-current.v2" and current.get("health_status") != manifest.get("result", {}).get("health_status"):
+                errors.append("current.json health status does not match manifest")
             if current.get("health_score") != manifest.get("result", {}).get("health_score"):
                 errors.append("current.json health score does not match manifest")
             if current.get("diff_signal") != manifest.get("result", {}).get("diff_signal"):
                 errors.append("current.json diff signal does not match manifest")
             if current.get("automatic_trading") is not False:
                 errors.append("current.json automatic_trading must be false")
-    except TrackingError as exc:
+    except (TrackingError, OSError, ValueError, TypeError, AttributeError) as exc:
         errors.append(str(exc))
     working_root = root / ".working"
     workspaces = sorted(path.name for path in working_root.iterdir() if path.is_dir()) if working_root.is_dir() else []
@@ -854,8 +958,13 @@ def verify_tracking(tracking_root: Path, *, require_read_only: bool = True) -> d
     }
 
 
-def tracking_status(tracking_root: Path) -> dict[str, Any]:
+def tracking_status(tracking_root: Path, *, today: dt.date | None = None) -> dict[str, Any]:
     root = validate_tracking_root(tracking_root, create=False)
+    with tracking_lock(root):
+        return _tracking_status_locked(root, today=today)
+
+
+def _tracking_status_locked(root: Path, *, today: dt.date | None = None) -> dict[str, Any]:
     revision_root = root / "revisions"
     revisions = sorted(
         path.name
@@ -866,10 +975,43 @@ def tracking_status(tracking_root: Path) -> dict[str, Any]:
     workspaces = sorted(
         path.name for path in working_root.iterdir() if path.is_dir() and not path.is_symlink()
     ) if working_root.is_dir() else []
-    current = parse_current(root) if (root / "current.json").is_file() else None
+    current = None
+    verification = _verify_tracking_locked(root) if revisions or (root / "current.json").exists() else None
+    if verification:
+        current = verification["current"]
+    assessment: dict[str, Any] = {
+        "integrity": "VERIFIED" if verification and verification["valid"] else "INVALID" if verification else "UNVERIFIED",
+        "freshness": "UNKNOWN", "status": "UNVERIFIED", "score": None,
+        "assessed_on": (today or dt.datetime.now(dt.timezone.utc).date()).isoformat(),
+        "reason": "no verified revision available", "evidence_scope": "recorded thesis states; not independent source verification",
+    }
+    if verification and verification["valid"] and current:
+        revision_path = root / current["path"]
+        thesis = research_workflow.load_thesis(revision_path / "thesis.md")
+        state = read_json(revision_path / "state.json", "current tracking state")
+        health = health_contract(thesis)
+        review = state.get("next_mandatory_review")
+        due = review.get("due_date") if isinstance(review, dict) else None
+        # v1 allowed arbitrary review metadata. Do not reinterpret it as a valid deadline.
+        try:
+            if not isinstance(due, str) or dt.date.fromisoformat(due).isoformat() != due or due < thesis["metadata"]["as_of"]:
+                due = None
+        except ValueError:
+            due = None
+        date = assessment["assessed_on"]
+        freshness = "NOT_YET_VALID" if thesis["metadata"]["as_of"] > date else "UNKNOWN" if due is None else "STALE" if date > due else "WITHIN_REVIEW_WINDOW"
+        assessment.update(freshness=freshness, status=health["status"], score=health["score"],
+                          reason="recorded hypothesis and red-line assessment", review_due_date=due)
+        if freshness != "WITHIN_REVIEW_WINDOW":
+            assessment.update(score=None, reason="review window missing, not yet valid or expired; recorded judgment is not current evidence")
+            if assessment["status"] == "SUPPORTED":
+                assessment["status"] = "UNVERIFIED"
     return {
-        "schema": "money-craft.tracking-status.v1",
-        "valid": True,
+        "schema": "money-craft.tracking-status.v2",
+        "valid": verification["valid"] if verification else True,
+        "assessment": assessment,
+        "current_semantics": "archival pointer; use assessment for current interpretation",
+        "errors": verification["errors"] if verification else [],
         "tracking_root": str(root),
         "current": current,
         "revision_count": len(revisions),

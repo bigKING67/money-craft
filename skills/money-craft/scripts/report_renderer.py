@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
+import tempfile
 import hashlib
 import html
+from html.parser import HTMLParser
 import json
+import math
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,9 +29,6 @@ THEME_LABEL = "Money Craft Editorial Ivory"
 LAYOUT_MODE = "research-publication"
 RENDER_SCHEMA = "money-craft.report-render.v1"
 VERIFY_SCHEMA = "money-craft.report-render-verify.v1"
-EXTERNAL_DEPENDENCY_RE = re.compile(
-    r"\b(?:href|src|data)\s*=\s*(['\"])(?:https?:|file:|//)", re.IGNORECASE
-)
 PLACEHOLDER_RE = re.compile(r"\{\{[^}]+\}\}")
 H2_RE = re.compile(r'<h2\s+id="([^"]+)">(.*?)</h2>', re.IGNORECASE | re.DOTALL)
 TABLE_RE = re.compile(r"<table>.*?</table>", re.IGNORECASE | re.DOTALL)
@@ -241,7 +243,7 @@ def latest_period(parsed: ParsedReport) -> str:
 
 def display_company_name(parsed: ParsedReport) -> str:
     value = re.sub(r"[（(]\s*\d{6}(?:\.(?:SH|SZ|BJ))?\s*[）)]", "", parsed.title)
-    value = re.sub(r"(?:公司)?基本面研究(?:报告)?$", "", value).strip()
+    value = re.sub(r"基本面研究(?:报告)?$", "", value).strip()
     return value or parsed.title
 
 
@@ -319,7 +321,22 @@ def split_table_row(line: str) -> tuple[str, ...]:
 
 
 def parse_markdown_tables(text: str) -> list[MarkdownTable]:
-    lines = text.splitlines()
+    # Code examples are not research data. Keep blank boundaries so masking
+    # cannot join a header outside code to rows inside a code block.
+    lines: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.splitlines():
+        if fence is not None:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}\s*", line):
+                fence = None
+            lines.append("")
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            lines.append("")
+            continue
+        lines.append("" if line.expandtabs(4).startswith("    ") else line)
     tables: list[MarkdownTable] = []
     index = 0
     while index + 1 < len(lines):
@@ -327,6 +344,10 @@ def parse_markdown_tables(text: str) -> list[MarkdownTable]:
             index += 1
             continue
         headers = split_table_row(lines[index])
+        separators = split_table_row(lines[index + 1])
+        if len(separators) != len(headers) or not all(re.fullmatch(r":?-{3,}:?", cell) for cell in separators):
+            index += 1
+            continue
         rows: list[tuple[str, ...]] = []
         index += 2
         while index < len(lines) and "|" in lines[index] and lines[index].strip():
@@ -339,15 +360,28 @@ def parse_markdown_tables(text: str) -> list[MarkdownTable]:
     return tables
 
 
-def numeric_value(value: str) -> float | None:
-    cleaned = re.sub(r"[*_`]", "", value).replace(",", "").replace("−", "-")
-    match = re.search(r"[-+]?\d+(?:\.\d+)?", cleaned)
+def numeric_value(value: str, *, suffixes: tuple[str, ...] = ()) -> float | None:
+    """Accept a whole scalar, never extract numbers from ranges or prose.
+
+    Units are caller-owned: trends inherit row units, YoY allows %, and
+    per-share scenarios allow 元. Unsupported notation stays in the source table.
+    """
+    cleaned = value.strip().replace("−", "-")
+    for wrapper in ("**", "__", "`", "*", "_"):
+        if cleaned.startswith(wrapper) and cleaned.endswith(wrapper) and len(cleaned) > 2 * len(wrapper):
+            cleaned = cleaned[len(wrapper):-len(wrapper)].strip()
+            break
+    suffix = "(?:" + "|".join(re.escape(item) for item in suffixes) + ")?" if suffixes else ""
+    number = r"[+-]?(?:(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+    match = re.fullmatch(r"(" + number + r")\s*" + suffix, cleaned)
     if not match:
         return None
-    try:
-        return float(match.group(0))
-    except ValueError:
+    scalar = match.group(1).replace(",", "")
+    result = float(scalar)
+    nonzero_mantissa = any(char in "123456789" for char in scalar.lower().split("e")[0])
+    if not math.isfinite(result) or (result == 0 and nonzero_mantissa):
         return None
+    return result
 
 
 def financial_trend_table(tables: list[MarkdownTable]) -> MarkdownTable | None:
@@ -401,7 +435,19 @@ def match_series_key(label: str) -> str | None:
     return None
 
 
+def format_chart_number(value: float, *, decimals: int = 2, signed: bool = False) -> str:
+    """Keep nonzero labels nonzero, normalize signed zero and bound extreme text."""
+    value = 0.0 if value == 0 else value
+    sign = "+" if signed else ""
+    if value != 0 and (abs(value) < 0.5 * 10 ** -decimals or abs(value) >= 1e12):
+        return format(value, f"{sign}.3e").replace("-", "−")
+    return format(value, f"{sign}.{decimals}f").replace("-", "−")
+
+
 def format_value(value: float) -> str:
+    if value != 0 and (abs(value) < 0.005 or abs(value) >= 1e12):
+        return format_chart_number(value)
+    value = 0.0 if value == 0 else value
     if abs(value) >= 1000:
         formatted = f"{value:,.0f}"
     elif abs(value) >= 100:
@@ -411,13 +457,33 @@ def format_value(value: float) -> str:
     return formatted.replace("-", "−")
 
 
+def monetary_row_unit(label: str, first_header: str) -> str | None:
+    """Require an explicit monetary row unit; never convert or infer scales."""
+    match = UNIT_SUFFIX_RE.search(clean_markdown_text(label))
+    if match is None:
+        return None
+    unit = match.group(1).strip()
+    if re.fullmatch(r"(?:(?:人民币)?(?:元|千元|万元|百万元|亿元)|(?:千|万|百万|亿)?(?:美元|港元|欧元|日元))", unit) is None:
+        return None
+    header_unit = UNIT_SUFFIX_RE.search(clean_markdown_text(first_header))
+    if header_unit is not None and header_unit.group(1).strip() != unit:
+        return None
+    return unit
+
+
+def chronological_year_indices(table: MarkdownTable) -> list[int]:
+    years = [(int(clean_markdown_text(header)), index) for index, header in enumerate(table.headers)
+             if re.fullmatch(r"20\d{2}", clean_markdown_text(header))]
+    if len(years) < 3 or len({year for year, _ in years}) != len(years):
+        return []
+    return [index for _, index in sorted(years)]
+
+
 def financial_chart(table: MarkdownTable | None) -> str:
     """近五年核心财务 small multiples；每面板独立量程，数字只来自已披露表格。"""
     if table is None:
         return ""
-    year_indices = [
-        index for index, header in enumerate(table.headers) if re.fullmatch(r"20\d{2}", clean_markdown_text(header))
-    ]
+    year_indices = chronological_year_indices(table)
     if len(year_indices) < 3:
         return ""
     years = [clean_markdown_text(table.headers[index]) for index in year_indices]
@@ -433,12 +499,14 @@ def financial_chart(table: MarkdownTable | None) -> str:
         values = [numeric_value(row[index]) for index in year_indices]
         if any(value is None for value in values):
             continue
-        unit_match = UNIT_SUFFIX_RE.search(raw_label)
+        unit = monetary_row_unit(raw_label, table.headers[0])
+        if unit is None:
+            continue
         panels.append(
             {
                 "key": key,
                 "label": CHART_SERIES_LABELS[key],
-                "unit": unit_match.group(1) if unit_match else "",
+                "unit": unit,
                 "values": [float(value) for value in values],
             }
         )
@@ -468,18 +536,23 @@ def financial_chart(table: MarkdownTable | None) -> str:
         low = min(values)
         high = max(values)
         span = high - low or max(abs(high), 1.0)
+        if not math.isfinite(span):
+            return ""
         xs = [
-            chart_left + (chart_right - chart_left) * index / (len(values) - 1)
+            chart_left + (chart_right - chart_left) * (int(years[index]) - int(years[0])) / (int(years[-1]) - int(years[0]))
             for index in range(len(values))
         ]
         ys = [bottom - (value - low) / span * (bottom - top) for value in values]
         points = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
-        change = f"{(values[-1] / values[0] - 1) * 100:+.1f}%" if values[0] > 0 else "变化率不适用"
+        change = "变化率不适用"
+        if values[0] > 0:
+            delta = (values[-1] / values[0] - 1) * 100
+            change = format_chart_number(delta, decimals=1, signed=True) + "%" if math.isfinite(delta) else "变化率超出数值范围"
         series_title = "{} {}—{}".format(panel["label"], years[0], years[-1])
         elements.extend(
             [
                 # 文字一律用文本 token；系列身份由紧邻色点与线形承载。
-                f'<text x="0" y="{row_top + 24:.1f}" class="chart-name" fill="#171715" font-size="12" font-weight="650">{svg_text(panel["label"])}</text>',
+                f'<text x="0" y="{row_top + 24:.1f}" class="chart-name" fill="#171715" font-size="12" font-weight="650">{svg_text(panel["label"] + "（" + panel["unit"] + "）")}</text>',
                 f'<text x="0" y="{row_top + 44:.1f}" class="chart-range" fill="#77736B" font-size="9.5">{svg_text(format_value(values[0]))} → {svg_text(format_value(values[-1]))}</text>',
                 f'<circle cx="4" cy="{row_top + 62.5:.1f}" r="3" class="{css}" fill="{color}"/>',
                 f'<text x="12" y="{row_top + 66:.1f}" class="chart-delta" fill="#4E4B45" font-size="10" font-weight="700">{change}</text>',
@@ -517,12 +590,19 @@ def scenario_chart(table: MarkdownTable | None, current_price: float | None) -> 
     """估值情景水平细条；单一冷蓝系列，蓝灰虚线标截止日价格，支持负值。"""
     if table is None:
         return ""
-    value_index = next(
-        (index for index, header in enumerate(table.headers) if "价值" in header or "目标价" in header),
-        None,
+    # This chart compares per-share yuan values. Do not infer currencies or
+    # turn enterprise/total values into share prices from a substring match.
+    header_pattern = re.compile(
+        r"(?:目标价|示意价值|每股(?:内在|合理)?价值)"
+        r"(?:[（(](?P<unit>(?:人民币)?元(?:/股)?)[）)])?"
     )
-    if value_index is None:
+    columns = [(index, header_pattern.fullmatch(re.sub(r"\s+", "", clean_markdown_text(header))))
+               for index, header in enumerate(table.headers)]
+    candidates = [(index, match) for index, match in columns if match is not None]
+    if len(candidates) != 1:
         return ""
+    value_index, header_match = candidates[0]
+    explicit_header_unit = header_match.group("unit") is not None
     canonical_labels = {"bear", "base", "bull", "悲观", "中性", "乐观"}
     rows: list[tuple[str, float]] = []
     for row in table.rows:
@@ -531,21 +611,30 @@ def scenario_chart(table: MarkdownTable | None, current_price: float | None) -> 
         label = clean_markdown_text(row[0])
         if label.lower() not in canonical_labels:
             continue
-        value = numeric_value(row[value_index])
-        if value is not None:
-            rows.append((label, value))
-    if len(rows) < 3:
+        cell = row[value_index]
+        if not explicit_header_unit and numeric_value(cell) is not None:
+            return ""
+        value = numeric_value(cell, suffixes=("元", "元/股", "人民币元", "人民币元/股"))
+        if value is None:
+            return ""
+        rows.append((label, value))
+    labels = {label.lower() for label, _ in rows}
+    if len(rows) != 3 or labels not in ({"bear", "base", "bull"}, {"悲观", "中性", "乐观"}):
         return ""
 
     candidates = [value for _, value in rows]
     if current_price is not None:
         candidates.append(current_price)
+    if not all(math.isfinite(value) for value in candidates):
+        return ""
     low_bound = min(0.0, min(candidates))
     high_bound = max(max(candidates), 0.0)
     raw_span = high_bound - low_bound or max(abs(high_bound), abs(low_bound), 1.0)
     axis_min = low_bound - raw_span * 0.08 if low_bound < 0 else 0.0
     axis_max = high_bound + raw_span * 0.12
     plot_span = axis_max - axis_min
+    if not math.isfinite(plot_span) or plot_span <= 0:
+        return ""
 
     width = 520
     height = 236
@@ -554,7 +643,7 @@ def scenario_chart(table: MarkdownTable | None, current_price: float | None) -> 
     chart_width = chart_right - chart_left
 
     def x_at(value: float) -> float:
-        return chart_left + chart_width * (value - axis_min) / plot_span
+        return chart_left + ((value - axis_min) / plot_span) * chart_width
 
     zero_x = x_at(0.0)
     elements = [
@@ -562,7 +651,7 @@ def scenario_chart(table: MarkdownTable | None, current_price: float | None) -> 
         f'aria-label="Bear Base Bull 估值情景与截止日价格比较，区间 {format_value(axis_min)} 到 {format_value(axis_max)} 元">'
     ]
     for tick in range(5):
-        tick_value = axis_min + plot_span * tick / 4
+        tick_value = axis_min + plot_span * (tick / 4)
         x = x_at(tick_value)
         elements.extend(
             [
@@ -573,15 +662,15 @@ def scenario_chart(table: MarkdownTable | None, current_price: float | None) -> 
     for index, (label, value) in enumerate(rows):
         y = 60 + index * 54
         if value >= 0:
-            bar_x, bar_width, label_anchor, label_x_offset = zero_x, chart_width * value / plot_span, "start", 7
+            bar_x, bar_width, label_anchor, label_x_offset = zero_x, (value / plot_span) * chart_width, "start", 7
         else:
-            bar_width = chart_width * (-value) / plot_span
+            bar_width = ((-value) / plot_span) * chart_width
             bar_x, label_anchor, label_x_offset = zero_x - bar_width, "end", -7
         elements.extend(
             [
                 f'<text x="{chart_left - 12}" y="{y + 4}" text-anchor="end" class="chart-name" fill="#171715" font-size="11" font-weight="650">{svg_text(label)}</text>',
-                f'<rect x="{bar_x:.1f}" y="{y - 4}" width="{max(bar_width, 0.5):.1f}" height="8" class="cs-scenario" fill="{SCENARIO_BAR_LIGHT}"><title>{svg_text(f"{label} {value:.2f} 元")}</title></rect>',
-                f'<text x="{min(bar_x + bar_width + label_x_offset, chart_right - 1):.1f}" y="{y - 9}" text-anchor="{label_anchor}" class="chart-value" fill="#171715" font-size="10" font-weight="650">{svg_text(f"{value:.2f}")}</text>',
+                f'<rect x="{bar_x:.1f}" y="{y - 4}" width="{bar_width:.6g}" height="8" class="cs-scenario" fill="{SCENARIO_BAR_LIGHT}"><title>{svg_text(f"{label} {format_chart_number(value)} 元")}</title></rect>',
+                f'<text x="{min(bar_x + bar_width + label_x_offset, chart_right - 1):.1f}" y="{y - 9}" text-anchor="{label_anchor}" class="chart-value" fill="#171715" font-size="10" font-weight="650">{svg_text(format_chart_number(value))}</text>',
             ]
         )
     if current_price is not None and axis_min <= current_price <= axis_max:
@@ -589,7 +678,7 @@ def scenario_chart(table: MarkdownTable | None, current_price: float | None) -> 
         elements.extend(
             [
                 f'<line x1="{x:.1f}" y1="27" x2="{x:.1f}" y2="204" class="chart-price-line" stroke="#315868" stroke-width="1.6" stroke-dasharray="3 3"/>',
-                f'<text x="{x:.1f}" y="18" text-anchor="middle" class="chart-price" fill="#315868" font-size="9" font-weight="700">截止日 {current_price:.2f}</text>',
+                f'<text x="{x:.1f}" y="18" text-anchor="middle" class="chart-price" fill="#315868" font-size="9" font-weight="700">截止日 {format_chart_number(current_price)}</text>',
             ]
         )
     elements.append("</svg>")
@@ -628,6 +717,19 @@ FALSIFICATION_ROW_RE = re.compile(r"^R\d{2,3}$")
 FALSIFICATION_STATUSES = ("WATCH", "CLEAR", "UNVERIFIED", "BROKEN")
 
 
+def yoy_percentage_value(header: str, cell: str) -> float | None:
+    """A percent chart cannot infer percentage points, money or bare ratios."""
+    normalized = re.sub(r"\s+", "", clean_markdown_text(header))
+    match = re.fullmatch(
+        r"同比(?:增长率|增速|变化率|变动率)?(?:[（(](?P<unit>%)[）)])?", normalized
+    )
+    if match is None:
+        return None
+    if match.group("unit") is None and numeric_value(cell) is not None:
+        return None
+    return numeric_value(cell, suffixes=("%",))
+
+
 def yoy_change_table(tables: list[MarkdownTable]) -> tuple[MarkdownTable, int] | None:
     """返回 (表, 同比列下标)：含「同比」列头、≥2 行可解析数值且包含营业收入行。"""
     for table in tables:
@@ -642,7 +744,7 @@ def yoy_change_table(tables: list[MarkdownTable]) -> tuple[MarkdownTable, int] |
         if index is None or not table.rows:
             continue
         resolvable = sum(
-            1 for row in table.rows if row and numeric_value(row[index]) is not None
+            1 for row in table.rows if row and yoy_percentage_value(table.headers[index], row[index]) is not None
         )
         labels = " ".join(clean_markdown_text(row[0]) for row in table.rows if row)
         if resolvable >= 2 and "营业收入" in labels:
@@ -661,7 +763,7 @@ def earnings_quality_chart(table: MarkdownTable | None, value_index: int | None)
         label = clean_markdown_text(row[0])
         if not label or "同比" in label:
             continue
-        value = numeric_value(row[value_index])
+        value = yoy_percentage_value(table.headers[value_index], row[value_index])
         if value is not None:
             entries.append((label[:10], value))
     if len(entries) < 2:
@@ -676,16 +778,18 @@ def earnings_quality_chart(table: MarkdownTable | None, value_index: int | None)
     axis_min = low - raw_span * 0.12 if low < 0 else 0.0
     axis_max = high + raw_span * 0.2
     plot_span = axis_max - axis_min
+    if not math.isfinite(plot_span) or plot_span <= 0:
+        return None
 
     width = 520
     row_height = 36
     top = 30
     height = top + row_height * len(entries) + 18
     plot_left, plot_right = 148, 464
-    center_line = plot_left + (plot_right - plot_left) * (-axis_min) / plot_span
+    center_line = plot_left + ((-axis_min) / plot_span) * (plot_right - plot_left)
 
     def x_at(value: float) -> float:
-        return plot_left + (plot_right - plot_left) * (value - axis_min) / plot_span
+        return plot_left + ((value - axis_min) / plot_span) * (plot_right - plot_left)
 
     elements = [
         f'<svg viewBox="0 0 {width} {height}" role="img" '
@@ -713,7 +817,7 @@ def earnings_quality_chart(table: MarkdownTable | None, value_index: int | None)
         elements.extend(
             [
                 f'<text x="{plot_left - 20}" y="{center_y + 4:.1f}" text-anchor="end" class="chart-name" fill="#171715" font-size="11">{svg_text(label)}</text>',
-                f'<rect x="{bar_x:.1f}" y="{bar_y:.1f}" width="{max(bar_width, 1.5):.1f}" height="7" class="{tone_class}" fill="{tone_hex}"><title>{svg_text(f"{label} {format_percent(value)}")}</title></rect>',
+                f'<rect x="{bar_x:.1f}" y="{bar_y:.1f}" width="{bar_width:.6g}" height="7" class="{tone_class}" fill="{tone_hex}"><title>{svg_text(f"{label} {format_percent(value)}")}</title></rect>',
                 f'<text x="{text_x:.1f}" y="{center_y - 6:.1f}" text-anchor="{anchor}" class="chart-value" fill="#171715" font-size="9.5" font-weight="650">{svg_text(format_percent(value))}</text>',
             ]
         )
@@ -721,23 +825,21 @@ def earnings_quality_chart(table: MarkdownTable | None, value_index: int | None)
     return (
         '<figure class="evidence-figure" data-chart="earnings-quality">'
         '<div class="figure-head"><figcaption class="figure-title">盈利质量｜同比变化</figcaption>'
-        f'<span class="figure-meta">% · OBSERVED{" · 仅显示前 8 项" if truncated else ""}</span></div>'
+        f'<span class="figure-meta">% · 原表同比{" · 仅显示前 8 项" if truncated else ""}</span></div>'
         + "".join(elements)
-        + '<p class="figure-note">正值冷蓝、负值朱砂；「持平」或未披露行不绘制。口径与计算见正文表格。</p></figure>'
+        + '<p class="figure-note">正值冷蓝、负值朱砂；「持平」或未披露行不绘制。数值转录自正文表格，证据状态、口径与计算见正文。</p></figure>'
     )
 
 
 def format_percent(value: float) -> str:
-    return f"{value:+.2f}%".replace("-", "−")
+    return format_chart_number(value, signed=True) + "%"
 
 
 def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
     """现金流结构：经营现金流 vs 资本开支代理项；FCF 代理为显式公式派生（INFERRED）。"""
     if table is None:
         return None
-    year_indices = [
-        index for index, header in enumerate(table.headers) if re.fullmatch(r"20\d{2}", clean_markdown_text(header))
-    ]
+    year_indices = chronological_year_indices(table)
     if len(year_indices) < 3:
         return None
     series_values: dict[str, list[float]] = {}
@@ -753,8 +855,10 @@ def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
         if any(value is None for value in values):
             continue
         series_values[key] = [float(value) for value in values]
-        unit = UNIT_SUFFIX_RE.search(clean_markdown_text(row[0]))
-        series_units[key] = unit.group(1) if unit else ""
+        unit = monetary_row_unit(row[0], table.headers[0])
+        if unit is None:
+            return None
+        series_units[key] = unit
         seen.add(key)
     if "operating_cash" not in series_values or "capex_proxy" not in series_values:
         return None
@@ -766,6 +870,8 @@ def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
     operating = series_values["operating_cash"]
     capex = series_values["capex_proxy"]
     fcf = [o - c for o, c in zip(operating, capex)]
+    if not all(math.isfinite(value) for value in fcf):
+        return None
     years = [clean_markdown_text(table.headers[index]) for index in year_indices]
 
     width, height = 520, 300
@@ -774,12 +880,14 @@ def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
     lo = min(0.0, min(all_values))
     hi = max(max(all_values), 0.001)
     span = hi - lo or hi
+    if not math.isfinite(span):
+        return None
 
     def y_at(value: float) -> float:
         return bottom - (value - lo) / span * (bottom - top)
 
     def x_at(index: int) -> float:
-        return left + (right - left) * index / (len(years) - 1)
+        return left + (right - left) * (int(years[index]) - int(years[0])) / (int(years[-1]) - int(years[0]))
 
     legend_items = (
         ("经营现金流", CHART_SERIES_LIGHT["operating_cash"], series_class("operating_cash")),
@@ -798,7 +906,7 @@ def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
         )
         legend_x += 58 + len(name) * 10.5
     for tick in range(5):
-        tick_value = lo + span * tick / 4
+        tick_value = lo + span * (tick / 4)
         y = y_at(tick_value)
         elements.extend(
             [
@@ -854,6 +962,11 @@ def cash_flow_structure_chart(table: MarkdownTable | None) -> str | None:
 def falsification_rows(tables: list[MarkdownTable]) -> list[tuple[str, str, str]] | None:
     """证伪条件表嗅探：行首 R 编号 + material/fatal 强度 + WATCH/CLEAR/UNVERIFIED/BROKEN 状态。"""
     for table in tables:
+        headers = [clean_markdown_text(header) for header in table.headers]
+        state_columns = [i for i, header in enumerate(headers) if header in {"状态", "当前状态"}]
+        severity_columns = [i for i, header in enumerate(headers) if header in {"强度", "严重度"}]
+        if len(state_columns) != 1 or len(severity_columns) > 1:
+            continue
         rows: list[tuple[str, str, str]] = []
         for row in table.rows:
             if not row:
@@ -861,17 +974,11 @@ def falsification_rows(tables: list[MarkdownTable]) -> list[tuple[str, str, str]
             first = clean_markdown_text(row[0]).upper()
             if not FALSIFICATION_ROW_RE.match(first):
                 continue
-            joined = " ".join(clean_markdown_text(cell) for cell in row).upper()
-            status = next((word for word in FALSIFICATION_STATUSES if re.search(rf"\b{word}\b", joined)), None)
-            if status is None:
+            status = clean_markdown_text(row[state_columns[0]]).upper()
+            if status not in FALSIFICATION_STATUSES:
                 continue
-            severity = (
-                "fatal"
-                if re.search(r"\bFATAL\b", joined)
-                else "material"
-                if re.search(r"\bMATERIAL\b", joined)
-                else ""
-            )
+            severity = clean_markdown_text(row[severity_columns[0]]).lower() if severity_columns else ""
+            severity = severity if severity in {"fatal", "material"} else ""
             rows.append((first, severity, status))
         if rows:
             return rows
@@ -921,8 +1028,8 @@ def evidence_coverage_chart(evidence: dict[str, Any] | list[Any] | None) -> str 
             continue
         title = clean_markdown_text(str(group.get("title") or ""))[:24]
         items = group.get("items")
-        captured = len(items) if isinstance(items, list) else 0
-        slots.append((source_id, f"{title} · {captured} 项" if title else ""))
+        count_label = f"{len(items)} 项" if isinstance(items, list) else "条目数未提供"
+        slots.append((source_id, f"{title} · {count_label}" if title else count_label))
     if not slots:
         return None
     slots.sort(key=lambda pair: pair[0])
@@ -932,10 +1039,10 @@ def evidence_coverage_chart(evidence: dict[str, Any] | list[Any] | None) -> str 
     )
     return (
         '<figure class="evidence-figure evidence-figure-text" data-chart="evidence-coverage">'
-        '<div class="figure-head"><figcaption class="figure-title">证据来源覆盖</figcaption>'
-        f'<span class="figure-meta">{len(slots)} 组已捕获</span></div>'
+        '<div class="figure-head"><figcaption class="figure-title">证据来源清单</figcaption>'
+        f'<span class="figure-meta">清单登记 {len(slots)} 组</span></div>'
         f'<div class="coverage-grid">{cells}</div>'
-        '<p class="figure-note">仅列出 manifest 已捕获来源；哈希与 URL 定位符见「主要数据来源」章节。</p></figure>'
+        '<p class="figure-note">仅展示 manifest 登记来源和条目数，不代表证据质量、采集成功或审计通过；哈希与 URL 定位符见「主要数据来源」章节。</p></figure>'
     )
 
 
@@ -979,18 +1086,88 @@ def build_visual_parts(context: ChartContext) -> list[str]:
     return parts
 
 
-def markdown_to_html(markdown_body: str) -> str:
+class ReportBodyAudit(HTMLParser):
+    """Accept report markup only, before trusted template assets are inserted."""
+    tags = frozenset("p br hr h1 h2 h3 h4 h5 h6 blockquote pre code em strong b i u s del sup sub ul ol li dl dt dd table thead tbody tfoot tr th td caption colgroup col a img span div details summary".split())
+    global_attributes = frozenset({"id", "class", "title", "lang", "dir"})
+    tag_attributes = {
+        "a": {"href"}, "img": {"src", "alt", "width", "height"},
+        "th": {"colspan", "rowspan", "scope", "style"},
+        "td": {"colspan", "rowspan", "style"},
+        "ol": {"start", "reversed", "type"}, "li": {"value"},
+        "col": {"span"}, "colgroup": {"span"}, "details": {"open"},
+    }
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in self.tags:
+            raise ReportRenderError(f"report body contains unsupported HTML element: {tag}")
+        allowed = self.global_attributes | self.tag_attributes.get(tag, set())
+        for name, value in attrs:
+            if name not in allowed:
+                raise ReportRenderError(f"report body contains unsupported HTML attribute: {name}")
+            if name == "style" and not re.fullmatch(r"\s*text-align\s*:\s*(?:left|right|center)\s*;?\s*", value or "", re.IGNORECASE):
+                raise ReportRenderError("report body only permits table text alignment styles")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag not in self.tags:
+            raise ReportRenderError(f"report body contains unsupported HTML closing element: {tag}")
+
+    def handle_decl(self, decl: str) -> None:
+        raise ReportRenderError("report body must not contain document declarations")
+
+    def handle_pi(self, data: str) -> None:
+        raise ReportRenderError("report body must not contain processing instructions")
+
+    def unknown_decl(self, data: str) -> None:
+        raise ReportRenderError("report body must not contain unknown declarations")
+
+
+def markdown_to_html(markdown_body: str, *, chart_tables: list[MarkdownTable] | None = None,
+                     visible_text: list[str] | None = None) -> str:
     try:
         import markdown  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ReportRenderError(
             "report rendering requires the optional `markdown` package; run with the configured report-render environment"
         ) from exc
-    return markdown.markdown(
-        markdown_body,
+    converter = markdown.Markdown(
         extensions=["tables", "fenced_code", "sane_lists", "toc"],
         output_format="html5",
     )
+    if chart_tables is not None or visible_text is not None:
+        from markdown.treeprocessors import Treeprocessor
+
+        class CollectChartTables(Treeprocessor):
+            def run(self, root):
+                def prose(element):
+                    if element.tag in {"code", "pre", "blockquote", "ul", "ol"}:
+                        return ""
+                    return (element.text or "") + "".join(prose(child) + (child.tail or "") for child in element)
+                if visible_text is not None:
+                    for element in root:
+                        text = prose(element)
+                        if "\x02" not in text and "\x03" not in text:
+                            visible_text.append(text)
+                if chart_tables is None:
+                    return
+                # Only actual top-level Markdown tables supply chart data.
+                # Raw HTML is still stashed; comments/code/nested examples
+                # cannot become data merely by containing pipe-delimited lines.
+                for table in root.findall("table"):
+                    headers = tuple("".join(cell.itertext()).strip() for cell in table.findall("./thead/tr/th"))
+                    rows = tuple(tuple("".join(cell.itertext()).strip() for cell in row.findall("td"))
+                                 for row in table.findall("./tbody/tr"))
+                    cells = (*headers, *(cell for row in rows for cell in row))
+                    if (headers and rows and all(len(row) == len(headers) for row in rows)
+                            and not any("\x02" in cell or "\x03" in cell for cell in cells)):
+                        chart_tables.append(MarkdownTable(headers, rows))
+
+        converter.treeprocessors.register(CollectChartTables(converter), "chart_tables", 15)
+    rendered = converter.convert(markdown_body)
+    body_audit = ReportBodyAudit(convert_charrefs=True)
+    body_audit.feed(rendered)
+    body_audit.close()
+    return rendered
 
 
 def strip_tags(value: str) -> str:
@@ -1086,7 +1263,7 @@ def decorate_headings(rendered: str) -> tuple[str, list[tuple[str, str]]]:
 
 def current_price(parsed: ParsedReport) -> float | None:
     value = metric_items(parsed)[0]["value"]
-    return numeric_value(value)
+    return numeric_value(value, suffixes=("元",))
 
 
 def build_masthead(parsed: ParsedReport, revision: dict[str, Any] | None) -> str:
@@ -1169,14 +1346,25 @@ def audit_summary(
     archive_audit = archive_manifest.get("audit") if isinstance(archive_manifest, dict) else None
     payload = archive_audit if isinstance(archive_audit, dict) else audit
     if isinstance(payload, dict):
-        verdict = str(payload.get("verdict", "PASS" if payload.get("valid") is True else "UNKNOWN"))
-        total = payload.get("total") or payload.get("check_count")
+        verdict = payload.get("verdict", "PASS" if payload.get("valid") is True else "FAIL" if payload.get("valid") is False else "UNKNOWN")
+        if verdict not in ("PASS", "FAIL", "UNKNOWN"):
+            verdict = "UNKNOWN"
+        if payload.get("valid") is False:
+            verdict = "FAIL"
+        total = payload.get("total", payload.get("check_count"))
+        if "total" in payload and "check_count" in payload and (
+                type(payload["check_count"]) is not int or payload["total"] != payload["check_count"]):
+            return "审计声明冲突", "UNKNOWN"
         passed = payload.get("pass_count")
         if total is not None and passed is not None:
+            if type(total) is not int or type(passed) is not int or not 0 <= passed <= total:
+                return "审计计数不可用", "UNKNOWN"
+            if passed < total and verdict == "PASS":
+                return "审计声明冲突", "UNKNOWN"
             return f"{passed}/{total} {human_status(verdict)}", verdict
         return human_status(verdict), verdict
     if isinstance(payload, list):
-        return f"{len(payload)}/{len(payload)} {human_status('PASS')}", "PASS"
+        return "审计格式未识别", "UNKNOWN"
     return human_status("NOT BOUND"), "UNKNOWN"
 
 
@@ -1186,15 +1374,30 @@ def evidence_summary(evidence: dict[str, Any] | list[Any] | None) -> str:
     summary = evidence.get("summary")
     if not isinstance(summary, dict):
         summary = evidence.get("evidence") if isinstance(evidence.get("evidence"), dict) else {}
-    captured = summary.get("captured") or summary.get("captured_urls")
-    expected = summary.get("expected_urls") or summary.get("expected")
-    failed = summary.get("failed") or summary.get("failed_urls") or 0
+    def count(primary: str, alias: str) -> int | None:
+        keys = [key for key in (primary, alias) if key in summary]
+        if not keys:
+            return None
+        values = [summary[key] for key in keys]
+        if any(type(value) is not int or value < 0 for value in values) or len(set(values)) != 1:
+            raise ValueError("invalid or conflicting evidence count")
+        return values[0]
+
+    try:
+        captured = count("captured", "captured_urls")
+        expected = count("expected", "expected_urls")
+        failed = count("failed", "failed_urls")
+    except ValueError:
+        return "清单计数不可用"
     if captured is not None and expected is not None:
-        if int(failed) == 0:
-            return f"{captured}/{expected}，完整"
-        return f"{captured}/{expected}，失败 {failed}"
+        if captured > expected or (failed is not None and failed > expected):
+            return "清单计数不可用"
+        failure_label = str(failed) if failed is not None else "未提供"
+        return f"清单计数 {captured}/{expected}，失败 {failure_label}"
+    if summary:
+        return "清单计数不可用"
     groups = evidence.get("groups")
-    return f"{len(groups)} 组" if isinstance(groups, list) else human_status("BOUND")
+    return f"清单登记 {len(groups)} 组（未核验）" if isinstance(groups, list) else human_status("BOUND")
 
 
 def offline_status(revision: dict[str, Any] | None) -> str:
@@ -1230,14 +1433,16 @@ def build_audit_seal(
     return f'''<section class="audit-seal" aria-labelledby="audit-seal-title">
   <h2 id="audit-seal-title">证据与完整性</h2>
   <div class="audit-grid">{cells}</div>
-  <p class="audit-note">本阅读层绑定版本 {html.escape(revision_label)} 与源 Markdown 哈希。HTML/PDF 可重建，不替代正式研究、原始证据、审计结论或离线核验。本报告不构成交易指令。</p>
+  <p class="audit-note">本阅读层绑定版本 {html.escape(revision_label)} 与源 Markdown 哈希。审计和离线状态为输入清单声明，本次渲染不重新执行这些检查。HTML/PDF 可重建，不替代正式研究、原始证据、审计结论或离线核验。本报告不构成交易指令。</p>
 </section>'''
 
 
 def replace_template(template: str, values: dict[str, str]) -> str:
-    document = template
-    for key, value in values.items():
-        document = document.replace("{{" + key + "}}", value)
+    # Substitute only tokens present in the template, never tokens introduced
+    # by report content or another replacement value.
+    document = PLACEHOLDER_RE.sub(
+        lambda match: values.get(match.group(0)[2:-2], match.group(0)), template
+    )
     leftovers = PLACEHOLDER_RE.findall(document)
     if leftovers:
         raise ReportRenderError(f"report template has unresolved placeholders: {sorted(set(leftovers))}")
@@ -1257,7 +1462,11 @@ def build_document(
     archive_manifest: dict[str, Any] | list[Any] | None,
     charts: bool,
 ) -> tuple[str, int]:
-    rendered = markdown_to_html(parsed.markdown_body)
+    tables: list[MarkdownTable] = []
+    visible_text: list[str] = []
+    rendered = markdown_to_html(parsed.markdown_body, chart_tables=tables, visible_text=visible_text)
+    # Derived summaries must use visible prose, never comments or code examples.
+    parsed = replace(parsed, source_text=parsed.title + "\n" + "\n".join(visible_text))
     rendered = decorate_text_nodes(rendered)
     rendered = wrap_tables(rendered)
     rendered, headings = decorate_headings(rendered)
@@ -1271,7 +1480,6 @@ def build_document(
     if conclusion:
         lead = conclusion.group(1)
         rendered = rendered[conclusion.end():]
-    tables = parse_markdown_tables(parsed.markdown_body)
     visual_parts: list[str] = []
     if charts:
         context = ChartContext(parsed=parsed, tables=tables, evidence=evidence)
@@ -1323,6 +1531,26 @@ def build_document(
     return document, len(visual_parts)
 
 
+class ResourceAttributeAudit(HTMLParser):
+    """Inspect decoded attributes; plain source citations are not dependencies."""
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.dependency_count = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if name not in {"href", "xlink:href", "src", "srcset", "poster", "action", "formaction", "ping", "background"} and not (tag == "object" and name == "data"):
+                continue
+            address = (value or "").strip()
+            if name in {"href", "xlink:href"} and address.startswith("#"):
+                continue
+            if name in {"src", "href", "xlink:href"} and re.fullmatch(
+                r"data:image/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=\s]+", address, re.IGNORECASE
+            ):
+                continue
+            self.dependency_count += 1
+
+
 def verify_html_text(
     document: str, *, source_sha256: str | None = None, expected_report: ParsedReport | None = None,
 ) -> dict[str, Any]:
@@ -1331,8 +1559,11 @@ def verify_html_text(
         errors.append("HTML does not declare offline portability")
     if '<meta name="generator" content="Money Craft">' not in document:
         errors.append("HTML does not declare the Money Craft generator")
-    if EXTERNAL_DEPENDENCY_RE.search(document):
-        errors.append("HTML contains a navigable external dependency")
+    resource_audit = ResourceAttributeAudit()
+    resource_audit.feed(document)
+    resource_audit.close()
+    if resource_audit.dependency_count:
+        errors.append("HTML contains a nonportable resource or navigation attribute")
     if re.search(r"<script[^>]+\bsrc\s*=|<link[^>]+\bhref\s*=", document, re.IGNORECASE):
         errors.append("HTML contains an external script or stylesheet reference")
     placeholders = PLACEHOLDER_RE.findall(document)
@@ -1357,7 +1588,7 @@ def verify_html_text(
         "valid": not errors,
         "portable_html": not errors,
         "source_sha256": embedded_hash,
-        "external_dependency_count": len(EXTERNAL_DEPENDENCY_RE.findall(document)),
+        "external_dependency_count": resource_audit.dependency_count,
         "placeholder_count": len(placeholders),
         "errors": errors,
     }
@@ -1384,6 +1615,21 @@ def write_pdf(html_path: Path, pdf_path: Path) -> int:
     if not pdf_path.is_file() or not pdf_path.read_bytes().startswith(b"%PDF"):
         raise ReportRenderError("PDF renderer did not produce a valid PDF header")
     return pdf_page_count(pdf_path)
+
+
+def validate_output_separation(inputs: Iterable[Path], outputs: Iterable[Path]) -> None:
+    """Reject path aliases before render outputs can modify their inputs."""
+    input_paths = list(inputs)
+    output_paths = list(outputs)
+    def aliases(left: Path, right: Path) -> bool:
+        return left.resolve() == right.resolve() or (
+            left.exists() and right.exists() and left.samefile(right)
+        )
+    for index, output in enumerate(output_paths):
+        if any(aliases(output, source) for source in input_paths):
+            raise ReportRenderError("render output must not alias any report input")
+        if any(aliases(output, other) for other in output_paths[:index]):
+            raise ReportRenderError("HTML and PDF outputs must be distinct files")
 
 
 def render_report(
@@ -1423,6 +1669,11 @@ def render_report(
             f"unsupported theme `{requested_theme}`; Money Craft reports use exactly `{CANONICAL_THEME}`"
         )
 
+    validate_output_separation(
+        [*(path for path, _label in paths),
+         *(path for path in (evidence_manifest, audit_path, revision_manifest, archive_manifest) if path is not None)],
+        [output_html, *([output_pdf] if output_pdf is not None else [])],
+    )
     source_sha_before = sha256_file(source)
     try:
         source_text = source.read_text(encoding="utf-8")
@@ -1451,14 +1702,29 @@ def render_report(
         raise ReportRenderError(f"portable HTML verification failed: {verification['errors']}")
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
-    output_html.write_text(document, encoding="utf-8")
     pages = None
-    if output_pdf is not None:
-        output_pdf.parent.mkdir(parents=True, exist_ok=True)
-        pages = write_pdf(output_html, output_pdf)
-    source_sha_after = sha256_file(source)
-    if source_sha_before != source_sha_after:
-        raise ReportRenderError("canonical Markdown changed during report rendering")
+    with contextlib.ExitStack() as staging:
+        html_directory = Path(staging.enter_context(tempfile.TemporaryDirectory(
+            prefix=".money-craft-render-", dir=output_html.parent
+        )))
+        staged_html = html_directory / output_html.name
+        staged_html.write_text(document, encoding="utf-8")
+        staged_pdf = None
+        if output_pdf is not None:
+            output_pdf.parent.mkdir(parents=True, exist_ok=True)
+            pdf_directory = Path(staging.enter_context(tempfile.TemporaryDirectory(
+                prefix=".money-craft-render-", dir=output_pdf.parent
+            )))
+            staged_pdf = pdf_directory / output_pdf.name
+            pages = write_pdf(staged_html, staged_pdf)
+        source_sha_after = sha256_file(source)
+        if source_sha_before != source_sha_after:
+            raise ReportRenderError("canonical Markdown changed during report rendering")
+        asset_hashes = {"template": sha256_file(template_path), "style": sha256_file(style_path), "script": sha256_file(script_path)}
+        # Each replacement is atomic; the HTML/PDF pair is not a transaction.
+        os.replace(staged_html, output_html)
+        if staged_pdf is not None:
+            os.replace(staged_pdf, output_pdf)
 
     return {
         "schema": RENDER_SCHEMA,
@@ -1466,11 +1732,11 @@ def render_report(
         "source": str(source),
         "source_sha256": source_sha_after,
         "template": str(template_path),
-        "template_sha256": sha256_file(template_path),
+        "template_sha256": asset_hashes["template"],
         "style": str(style_path),
-        "style_sha256": sha256_file(style_path),
+        "style_sha256": asset_hashes["style"],
         "script": str(script_path),
-        "script_sha256": sha256_file(script_path),
+        "script_sha256": asset_hashes["script"],
         "theme": CANONICAL_THEME,
         "requested_theme": requested_theme,
         "theme_label": THEME_LABEL,

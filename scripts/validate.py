@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from acceptance_case import AcceptanceError, load_case
+from upstream_sources import validate_tracking
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNED_DIRS = [
@@ -25,6 +26,8 @@ OWNED_DIRS = [
     ROOT / "tests",
     ROOT / "artifacts",
     ROOT / "acceptance",
+    ROOT / "docs",
+    ROOT / "openspec",
 ]
 SECRET_PATTERNS = [
     re.compile(rb"sk-fuyao-[A-Za-z0-9_-]{12,}"),
@@ -109,6 +112,7 @@ def validate() -> dict[str, Any]:
 
     try:
         lock = load_json(ROOT / "sources.lock.json")
+        errors.extend(validate_tracking(lock, ROOT))
         upstream = next(item for item in lock["upstreams"] if item["id"] == "ai-berkshire")
         if not (ROOT / upstream["license_file"]).is_file():
             errors.append("AI Berkshire license file is missing")
@@ -331,7 +335,10 @@ def validate() -> dict[str, Any]:
     quick_validate = Path.home() / ".codex" / "skills" / ".system" / "skill-creator" / "scripts" / "quick_validate.py"
     if quick_validate.is_file():
         code, output = run([sys.executable, str(quick_validate), "skills/money-craft"])
-        if code:
+        if code and "ModuleNotFoundError" in output:
+            # Optional host tool with missing host dependencies; built-in frontmatter checks still ran.
+            warnings.append("Codex quick_validate.py dependencies are unavailable; built-in frontmatter checks ran")
+        elif code:
             errors.append(f"skill quick_validate failed: {output}")
         else:
             checks.append("skill-quick-validate")

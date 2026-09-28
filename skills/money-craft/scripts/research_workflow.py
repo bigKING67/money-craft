@@ -180,6 +180,35 @@ def normalize_security_identity(
     return identity
 
 
+def add_evidence_requirements(plan: dict[str, Any], declarations: list[dict[str, Any]] | None) -> None:
+    """Extend a newly constructed plan, never an initialized workspace."""
+    if declarations is None:
+        return
+    if not isinstance(declarations, list) or len(declarations) > 16:
+        raise WorkflowError("invalid_additional_evidence", "additional evidence must be an array of at most 16 declarations")
+    seen = {item["id"] for key in ("provider_operations", "official_evidence_requirements", "public_evidence_requirements")
+            for item in plan[key]}
+    staged: list[tuple[str, dict[str, Any]]] = []
+    for item in declarations:
+        if not isinstance(item, dict) or set(item) - {"id", "kind", "role", "period"}:
+            raise WorkflowError("invalid_additional_evidence", "source declarations accept only id, kind, role and optional period")
+        source_id, kind, role = item.get("id"), item.get("kind"), item.get("role")
+        if not isinstance(source_id, str) or not re.fullmatch(r"S[0-9]{2,4}", source_id) or source_id in seen:
+            raise WorkflowError("invalid_additional_evidence", "additional source IDs must be unique Sxx identifiers and not collide with the plan")
+        if kind not in ("official-document", "official-index", "official-material", "public-material"):
+            raise WorkflowError("invalid_additional_evidence", "unsupported additional source kind")
+        if not isinstance(role, str) or not 1 <= len(role.strip()) <= 256:
+            raise WorkflowError("invalid_additional_evidence", "additional source role must contain 1..256 characters")
+        period = item.get("period")
+        if period is not None and (not isinstance(period, str) or not REPORT_RE.fullmatch(period)):
+            raise WorkflowError("invalid_additional_evidence", "additional source period must be YYYY-1..4 or null")
+        seen.add(source_id)
+        collection = "public_evidence_requirements" if kind == "public-material" else "official_evidence_requirements"
+        staged.append((collection, {"id": source_id, "kind": kind, "role": role.strip(), "period": period, "required": False}))
+    for collection, requirement in staged:
+        plan[collection].append(requirement)
+
+
 def company_research_plan(
     *,
     security: str,
@@ -191,6 +220,7 @@ def company_research_plan(
     base_currency: str | None = None,
     latest_report_end: str | None = None,
     latest_annual_report: str | None = None,
+    additional_evidence: list[dict[str, Any]] | None = None,
     today: dt.date | None = None,
 ) -> dict[str, Any]:
     identity = normalize_security_identity(
@@ -214,6 +244,8 @@ def company_research_plan(
         effective_report_end = report_period_end(report_year, report_quarter)
     else:
         effective_report_end = parse_date(latest_report_end, "latest_report_end")
+    if code is not None and effective_report_end != report_period_end(report_year, report_quarter):
+        raise WorkflowError("report_end_mismatch", "A-share report end must match its calendar-quarter period")
     if effective_report_end > research_date:
         raise WorkflowError("future_report_period", "latest report period ends after as_of")
     if latest_annual_report is None:
@@ -228,6 +260,8 @@ def company_research_plan(
         if not latest_annual_report.endswith("-4"):
             raise WorkflowError("invalid_report_period", "latest_annual_report must identify an annual YYYY-4 period")
         annual_report = latest_annual_report
+    if parse_report_period(annual_report) > (report_year, report_quarter):
+        raise WorkflowError("invalid_annual_period", "latest annual report cannot be later than latest report period")
     history_start = shift_years(research_date, -5).isoformat()
     month_start = research_date.replace(day=1).isoformat()
     comparison_period = f"{report_year - 1}-{report_quarter}"
@@ -406,7 +440,7 @@ def company_research_plan(
     else:
         operations = []
 
-    return {
+    plan = {
         "schema": "money-craft.company-research-plan.v1",
         "mode": "research",
         "identity": identity,
@@ -429,6 +463,10 @@ def company_research_plan(
             {"id": "valuation-and-thesis", "gate": "three scenarios and testable assumptions"},
             {"id": "audit", "gate": "report, financial, and reconciliation audits valid"},
         ],
+        "public_evidence_requirements": [
+            {"id": "S31", "role": "public quotation snapshot", "required": False},
+            {"id": "S32", "role": "public quotation cross-check snapshot", "required": False},
+        ],
         "official_evidence_requirements": [
             {"id": "S11", "role": "latest-period formal filing", "period": latest_report, "required": True},
             {"id": "S12", "role": "latest audited annual report", "period": annual_report, "required": True},
@@ -437,6 +475,20 @@ def company_research_plan(
                 "role": "exchange disclosure or issuer investor-relations index",
                 "period": None,
                 "required": True,
+            },
+            {
+                "id": "S21",
+                "role": "historical audited annual report for comparable financial history",
+                "period": None,
+                "required": False,
+                "trigger": "earlier annual financial statements needed for historical or normalized baseline",
+            },
+            {
+                "id": "S22",
+                "role": "additional historical audited annual report for comparative balances",
+                "period": None,
+                "required": False,
+                "trigger": "additional earlier balances or accounting notes needed for multi-year analysis",
             },
             {
                 "id": "S18",
@@ -533,6 +585,8 @@ def company_research_plan(
             "raw_provider_payloads_public": False,
         },
     }
+    add_evidence_requirements(plan, additional_evidence)
+    return plan
 
 
 def sha256_text(text: str) -> str:
@@ -656,7 +710,7 @@ def load_thesis(path: Path) -> dict[str, Any]:
         "sources": sources,
         "sections": {
             name: report_audit.extract_section(body, name).strip()
-            for name in ("结论", "估值与假设", "风险与反方证据")
+            for name in ("结论", "事实与证据", "估值与假设", "风险与反方证据")
         },
         "audits": {
             "report": {"valid": True, "warnings": report_result["warnings"]},
@@ -795,7 +849,7 @@ def thesis_diff(previous: Path, current: Path) -> dict[str, Any]:
         signal = "CRITICAL_REVIEW"
     elif {"DAMAGED", "WEAKENED"} & current_hypothesis_states or "WATCH" in current_red_line_states:
         signal = "REVIEW_REQUIRED"
-    elif any(item["changed"] for item in section_changes.values()) or any(
+    elif any(source_changes.values()) or any(item["changed"] for item in section_changes.values()) or any(
         hypotheses[key] or red_lines[key] for key in ("added", "removed", "changed")
     ):
         signal = "CHANGED"

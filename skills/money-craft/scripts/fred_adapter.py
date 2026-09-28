@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import http.client
+import math
 import os
+import re
 import socket
 import stat
 import time
@@ -13,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -62,14 +65,53 @@ class FredResult:
     fetched_at: str
 
 
+class _BoundedRedirectBody:
+    """Constrain urllib's redirect drain while retaining its redirect policy."""
+
+    def __init__(self, stream: Any) -> None:
+        self.stream = stream
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.stream, name)
+
+    def read(self, size: int = -1) -> bytes:
+        if getattr(self.stream, "closed", False):
+            return b""
+        data = self.stream.read(MAX_RESPONSE_BYTES + 1 if size < 0 else min(size, MAX_RESPONSE_BYTES + 1))
+        if len(data) > MAX_RESPONSE_BYTES:
+            raise FredAdapterError("response_too_large", "FRED redirect response exceeds byte limit")
+        if size < 0:
+            length = getattr(self.stream, "headers", {}).get("Content-Length")
+            if length is not None:
+                try:
+                    expected = int(length)
+                except ValueError as exc:
+                    raise FredAdapterError("malformed_response", "FRED redirect Content-Length is invalid") from exc
+                if expected < 0 or len(data) > expected:
+                    raise FredAdapterError("malformed_response", "FRED redirect length contradicts Content-Length")
+                if len(data) < expected:
+                    raise http.client.IncompleteRead(data, expected - len(data))
+        return data
+
+
 class SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Reject redirects that could disclose the query-string API key."""
 
+    def http_error_302(self, req: Any, fp: Any, code: int, msg: str, headers: Any) -> Any:
+        try:
+            return super().http_error_302(req, _BoundedRedirectBody(fp), code, msg, headers)
+        finally:
+            fp.close()
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
     def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
-        old_host = urllib.parse.urlsplit(req.full_url).netloc.lower()
-        new_host = urllib.parse.urlsplit(newurl).netloc.lower()
-        if old_host != new_host:
-            raise urllib.error.HTTPError(newurl, code, "cross-host redirect rejected", headers, fp)
+        original = urllib.parse.urlsplit(req.full_url)
+        target = urllib.parse.urlsplit(newurl)
+        if (original.scheme != "https" or target.scheme != "https"
+                or original.netloc.lower() != target.netloc.lower()
+                or target.username is not None or target.password is not None):
+            raise urllib.error.HTTPError(newurl, code, "unsafe FRED redirect rejected", headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -88,11 +130,11 @@ def api_key_path(
 
 
 def _sanitize(message: Any, secrets: tuple[str, ...] = ()) -> str:
-    cleaned = str(message).replace("\r", " ").replace("\n", " ")[:500]
+    cleaned = str(message).replace("\r", " ").replace("\n", " ")
     for secret in secrets:
         if secret:
             cleaned = cleaned.replace(secret, "[REDACTED]")
-    return cleaned
+    return cleaned[:500]
 
 
 def _validate_key(value: str) -> str:
@@ -128,6 +170,8 @@ def load_credential(
             "missing_configuration",
             f"configure {API_KEY_ENV} or {path_display}",
         ) from exc
+    except OSError as exc:
+        raise FredAdapterError("invalid_configuration", f"cannot inspect {path_display}") from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise FredAdapterError(
             "invalid_configuration",
@@ -149,11 +193,23 @@ def load_credential(
             f"{path_display} has an invalid size",
         )
     try:
-        value = path.read_text(encoding="utf-8")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if ((opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or opened.st_uid != metadata.st_uid
+                    or stat.S_IMODE(opened.st_mode) & 0o077):
+                raise FredAdapterError("invalid_configuration", f"{path_display} changed or is unsafe to read")
+            raw = stream.read(MAX_API_KEY_BYTES + 1)
+        if not 1 <= len(raw) <= MAX_API_KEY_BYTES:
+            raise FredAdapterError("invalid_configuration", f"{path_display} has an invalid size")
+        value = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise FredAdapterError(
             "invalid_configuration",
-            f"cannot read {path_display}: {_sanitize(exc)}",
+            f"cannot read {path_display}",
         ) from exc
     if "\n" in value.rstrip("\n") or "\r" in value:
         raise FredAdapterError(
@@ -177,6 +233,8 @@ def _bounded_retry_after(headers: Mapping[str, str] | None) -> float | None:
         seconds = float(value)
     except ValueError:
         return None
+    if not math.isfinite(seconds):
+        return None
     return max(0.0, min(seconds, 10.0))
 
 
@@ -187,7 +245,7 @@ def _parse_json(raw: bytes, *, secret: str) -> dict[str, Any]:
             parse_float=Decimal,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"invalid constant: {value}")),
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, InvalidOperation) as exc:
         raise FredAdapterError(
             "malformed_response",
             f"FRED response is not valid UTF-8 JSON: {_sanitize(exc, (secret,))}",
@@ -197,7 +255,28 @@ def _parse_json(raw: bytes, *, secret: str) -> dict[str, Any]:
     return payload
 
 
-def _validate_payload(operation: str, payload: dict[str, Any]) -> None:
+def _canonical_date(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return dt.date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def pagination_warning(operation: str, payload: dict[str, Any]) -> str | None:
+    """Describe completeness of an already validated provider page."""
+    if operation not in {"search", "observations", "vintages"}:
+        return None
+    if "count" not in payload:
+        return "FRED pagination completeness is unverified: response metadata is missing."
+    field = {"search":"seriess", "observations":"observations", "vintages":"vintage_dates"}[operation]
+    if payload["offset"] != 0 or len(payload[field]) < payload["count"]:
+        return "FRED response is a partial page; do not treat it as the complete requested dataset."
+    return None
+
+
+def _validate_payload(operation: str, payload: dict[str, Any], parameters: dict[str, Any]) -> None:
     expected = {
         "search": "seriess",
         "series": "seriess",
@@ -209,6 +288,72 @@ def _validate_payload(operation: str, payload: dict[str, Any]) -> None:
             "malformed_response",
             f"FRED {operation} response is missing the {expected} array",
         )
+
+    rows = payload[expected]
+    if operation in {"search", "observations", "vintages"} and "limit" in parameters and len(rows) > parameters["limit"]:
+        raise FredAdapterError("malformed_response", "FRED page exceeds the requested limit")
+    if operation in {"search", "observations", "vintages"} and any(key in payload for key in ("count", "offset", "limit")):
+        for key in ("count", "offset", "limit"):
+            value = payload.get(key)
+            if type(value) is not int or value < (1 if key == "limit" else 0):
+                raise FredAdapterError("malformed_response", "FRED pagination metadata is invalid")
+        if payload["offset"] != parameters.get("offset", 0) or ("limit" in parameters and payload["limit"] != parameters["limit"]):
+            raise FredAdapterError("malformed_response", "FRED pagination does not match the request")
+        if len(rows) != min(payload["limit"], max(0, payload["count"] - payload["offset"])):
+            raise FredAdapterError("malformed_response", "FRED page length contradicts pagination metadata")
+    if operation in {"series", "search"}:
+        if any(not isinstance(row, dict) or not isinstance(row.get("id"), str)
+               or not row["id"].strip() for row in rows):
+            raise FredAdapterError("malformed_response", "FRED series row has an invalid identity")
+        if operation == "series" and (len(rows) != 1 or rows[0]["id"] != parameters.get("series_id")):
+            raise FredAdapterError("malformed_response", "FRED series response does not match the requested identity")
+    if operation == "vintages":
+        if any(not _canonical_date(date) for date in rows):
+            raise FredAdapterError("malformed_response", "FRED vintage dates contain an invalid date")
+        start, end = parameters.get("realtime_start"), parameters.get("realtime_end")
+        for key in ("realtime_start", "realtime_end"):
+            if key in parameters and payload.get(key) != parameters[key]:
+                raise FredAdapterError("malformed_response", "FRED vintage response does not match the requested range")
+        if any((start is not None and date < start) or (end is not None and date > end) for date in rows):
+            raise FredAdapterError("malformed_response", "FRED vintage date is outside the requested range")
+
+    # The CLI's as-known-on contract requests a single closed real-time day.
+    # A row's validity interval may span that day; do not require equal endpoints.
+    as_of = parameters.get("realtime_start")
+    if operation in {"series", "observations"} and as_of is not None and as_of == parameters.get("realtime_end"):
+        if not _canonical_date(as_of) or any(payload.get(key) != as_of for key in ("realtime_start", "realtime_end")):
+            raise FredAdapterError("malformed_response", "FRED response does not match the requested as-of date")
+        for row in rows:
+            start = row.get("realtime_start") if isinstance(row, dict) else None
+            end = row.get("realtime_end") if isinstance(row, dict) else None
+            if not (_canonical_date(start) and _canonical_date(end) and start <= as_of <= end):
+                raise FredAdapterError("malformed_response", "FRED row is not valid on the requested as-of date")
+
+    if operation == "observations":
+        if "units" in parameters and payload.get("units") != parameters["units"]:
+            raise FredAdapterError("malformed_response", "FRED units do not match the requested transformation")
+        # CLI uses the default real-time-period format. Other formats carry
+        # different value fields and must not be silently treated as this one.
+        output_type = payload.get("output_type", 1)
+        if type(output_type) is not int or output_type != 1:
+            raise FredAdapterError("malformed_response", "unsupported FRED observation output type")
+        for index, row in enumerate(payload[expected]):
+            valid = isinstance(row, dict)
+            date = row.get("date") if valid else None
+            value = row.get("value") if valid else None
+            valid = valid and _canonical_date(date)
+            if valid:
+                start, end = parameters.get("observation_start"), parameters.get("observation_end")
+                if (start is not None and date < start) or (end is not None and date > end):
+                    raise FredAdapterError("malformed_response", "FRED observation is outside the requested date range")
+            if value != ".":
+                numeric = isinstance(value, str) and re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value)
+                try:
+                    valid = bool(valid and numeric and Decimal(value).is_finite())
+                except InvalidOperation:
+                    valid = False
+            if not valid:
+                raise FredAdapterError("malformed_response", f"FRED observation row {index} has an invalid date or value")
 
 
 class FredClient:
@@ -229,6 +374,16 @@ class FredClient:
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._api_key = _validate_key(api_key)
+        try:
+            endpoint = urllib.parse.urlsplit(base_url)
+            valid_url = (endpoint.scheme == "https" and bool(endpoint.hostname)
+                         and endpoint.username is None and endpoint.password is None
+                         and not endpoint.query and not endpoint.fragment)
+            endpoint.port  # Validate malformed or out-of-range port syntax.
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise FredAdapterError("invalid_configuration", "FRED base URL must be HTTPS with a host and no user info, query or fragment")
         self._base_url = base_url.rstrip("/")
         self._user_agent = user_agent
         self._opener = opener or urllib.request.build_opener(SameHostRedirectHandler())
@@ -269,6 +424,7 @@ class FredClient:
         )
         try:
             with self._opener.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                declared_length = None
                 content_length = response.headers.get("Content-Length")
                 if content_length:
                     try:
@@ -289,9 +445,26 @@ class FredClient:
                         "response_too_large",
                         f"FRED response exceeds {MAX_RESPONSE_BYTES} bytes",
                     )
+                if declared_length is not None:
+                    if len(raw) < declared_length:
+                        raise http.client.IncompleteRead(raw, declared_length - len(raw))
+                    if len(raw) > declared_length:
+                        raise FredAdapterError("malformed_response", "FRED response length contradicts Content-Length")
         except urllib.error.HTTPError as exc:
             retryable = exc.code == 429 or 500 <= exc.code <= 599
-            body = exc.read(4096) if hasattr(exc, "read") else b""
+            # HTTP status remains authoritative when its optional error body
+            # cannot be read. Always release the response before retrying.
+            diagnostic = ""
+            try:
+                body = exc.read(4096)
+            except (OSError, http.client.HTTPException):
+                body = b""
+                diagnostic += "error body unavailable; "
+            finally:
+                try:
+                    exc.close()
+                except (OSError, http.client.HTTPException):
+                    diagnostic += "error response cleanup failed; "
             message = _sanitize(exc.reason, (self._api_key,))
             if body:
                 try:
@@ -302,19 +475,21 @@ class FredClient:
                     message = _sanitize(error_payload["error_message"], (self._api_key,))
             raise FredAdapterError(
                 "http_error",
-                f"FRED HTTP {exc.code}: {message}",
+                f"FRED HTTP {exc.code}: {diagnostic}{message}",
                 code=exc.code,
                 retryable=retryable,
                 retry_after=_bounded_retry_after(exc.headers),
             ) from exc
-        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError, http.client.HTTPException) as exc:
             raise FredAdapterError(
                 "network_error",
                 _sanitize(exc, (self._api_key,)),
                 retryable=True,
             ) from exc
         payload = _parse_json(raw, secret=self._api_key)
-        if isinstance(payload.get("error_code"), int):
+        if "error_code" in payload or "error_message" in payload:
+            if type(payload.get("error_code")) is not int or not 400 <= payload["error_code"] <= 599:
+                raise FredAdapterError("malformed_response", "FRED response has an invalid error envelope")
             code = int(payload["error_code"])
             raise FredAdapterError(
                 "provider_error",
@@ -322,7 +497,7 @@ class FredClient:
                 code=code,
                 retryable=code == 429 or 500 <= code <= 599,
             )
-        _validate_payload(operation, payload)
+        _validate_payload(operation, payload, parameters)
         return FredResult(
             operation=operation,
             path=f"/fred{path}",

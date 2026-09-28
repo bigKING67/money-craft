@@ -207,6 +207,11 @@ def smoke(package: Path) -> dict[str, Any]:
             ):
                 raise ValueError(f"installed research status failed: {output}")
             checks.append("installed-research-run-smoke")
+            from earnings_smoke import run_smoke
+            earnings = run_smoke(installed / "scripts" / "money_craft.py")
+            if earnings.get("valid") is not True:
+                raise ValueError("installed earnings pipeline failed")
+            checks.append("installed-earnings-pipeline-smoke")
     except (OSError, ValueError, tarfile.TarError, json.JSONDecodeError) as exc:
         errors.append(str(exc))
     return {

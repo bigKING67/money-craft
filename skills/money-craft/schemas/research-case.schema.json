@@ -13,13 +13,43 @@
     "official_sources"
   ],
   "properties": {
-    "schema": {"const": "money-craft.research-case.v1"},
-    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "identity": {"type": "object"},
-    "as_of": {"type": "string", "format": "date"},
-    "provider_documentation": {"type": "string", "format": "uri"},
-    "operations": {"type": "array", "items": {"type": "object"}},
-    "official_sources": {"type": "array", "minItems": 3, "items": {"type": "object"}}
+    "schema": {
+      "const": "money-craft.research-case.v1"
+    },
+    "plan_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identity": {
+      "type": "object"
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date"
+    },
+    "provider_documentation": {
+      "type": "string",
+      "format": "uri"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "official_sources": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object"
+      }
+    },
+    "public_sources": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
   },
   "additionalProperties": false
 }
