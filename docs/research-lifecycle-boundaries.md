@@ -88,3 +88,13 @@ adapter-export额外核对schema/provider/operation/symbol/parameters/fetched_at
 不会要求时间戳单调递增：系统时钟回拨不应破坏合法顺序，事件顺序由sequence表达。合法既有中断恢复继续适用；错误state在读取入口返回invalid_state，不自动迁移或修复。真实CLI回归验证畸形状态不产生traceback且文件不被改写。见[state合同验收](../acceptance/research-state-contract-review-20260919.json)。
 
 时间合同限定常规非闰秒RFC3339表达：小时00..23、分秒00..59，不接受24:00自动归次日。独立复核发现Python3.14会宽容解析24:00，现用显式范围消除此跨版本差异；16个畸形状态CLI案例覆盖该边界。
+
+## 运行时完整性细节（自 company-research reference 迁出）
+
+封存收据存在后，`collect`（含 `--resume`）与 `import-official` 拒绝修改该工作区，补充证据须新建研究运行。成功采集必须保留 `capture.json`：采集、恢复、状态检查和封存核对来源编号、Provider、操作、时间、request ID，以及原始响应的 SHA-256 与字节数。元数据缺失或不匹配、响应发生漂移时返回结构化错误；不会重新计算哈希来接纳已改变的响应。新封存的 manifest 同时绑定 capture 元数据，额外字段被改动也会令收据失效。旧工作区缺少采集元数据时应重新采集到新运行，不自动补造历史哈希。官方导入若在清单发布后、事件记录完成前中断，保留已发布证据并返回 `incomplete_import`，拒绝继续状态准出或封存；保留现场并新建研究运行，不自行补造完成事件。清单发布前的失败仅在确认原清单未变且文件属于本次导入时清理。清单发布前中断留下的官方文件（已登记且仍待导入的来源）或标准命名的导入暂存文件也返回 `incomplete_import`，包括可选来源；检查不读取、接纳或删除这些文件。保留旧工作区，新建运行后重新采集与导入原始材料；原地自动恢复及其他类型的孤儿文件仍未闭环。这些是本地完整性校验，不能证明外部来源真实性；禁止覆盖的单文件写入通过同目录硬链接原子发布，竞争者返回 `existing_artifact`，不支持硬链接的文件系统直接报错，不回退到可能覆盖的写法。`collect`（含 CLI 的 Provider 预检查）、`import-official`、`status` 和 `finalize` 在读取工作区前取得共用非阻塞锁，占用时返回 `workspace_busy`，待当前操作结束后重试。锁文件位于工作区旁的 `.<workspace-name>.research.lock`，不进入封存目录；释放后保留文件，不能在操作进行中删除或替换它，否则会破坏互斥。正常退出、异常退出和进程终止会释放操作系统锁。此锁只协调这些入口，不保护外部编辑器直接改文件；初始化也使用同一把锁，在构建暂存目录前加锁并在锁内再次检查目标；竞争者返回 `workspace_busy`，已有目标返回 `existing_workspace`。发布前进程终止后可重新初始化，原暂存目录保留在旁，不自动复用或删除。外部绕过锁创建/替换目录、多文件提交中断恢复、Windows 和网络文件系统运行验收仍待补齐。
+
+采集若已发布已登记来源的 capture 目录、尚未写入对应标准化结果，或留下标准 UUID 命名的 capture 暂存目录，后续入口返回 `incomplete_collection`；不重复请求 Provider、不从残留数据推造标准化结果、不清理现场。应保留原运行并新建运行重新采集。若所有标准化结果及对应 capture 完整，仅汇总/采集事件写入中断，可用 `collect --resume` 重新校验并复用已有结果，补写汇总和事件；结果中的 `network_requests_attempted` 应为 0。部分来源尚未采集时，resume 仍可能请求那些缺失来源。
+
+采集在调用 Provider 或更新汇总前检查事件容量；达到上限返回 `state_limit`，首次与 resume 均不请求数据、不改写工作区。
+
+若收据已发布但 `finalized` 完成事件未记入，`status` 返回 `complete=false`、`stages.finalization_event=pending`，并提示重试 `finalize`。重试在锁内重新验证收据绑定、证据及报告；仅在全部通过后补记当前时间的完成事件，不改写原收据、manifest 或审计文件。已有事件不重复追加；证据漂移或事件容量耗尽时拒绝恢复。此路径只恢复完成事件，不修复其他中断、不清理强杀遗留暂存文件，也不证明断电耐久性。

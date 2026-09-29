@@ -15,6 +15,8 @@
 
 配置、持久运行数据和缓存默认分别位于 `~/.config/money-craft`、`~/.local/share/money-craft`、`~/.cache/money-craft`。`MONEY_CRAFT_CONFIG_HOME`、`MONEY_CRAFT_DATA_HOME`、`MONEY_CRAFT_CACHE_HOME` 或对应 XDG 变量可覆盖各自路径，且覆盖值必须是绝对路径。源码开发只能用 `MONEY_CRAFT_ENV_FILE` 显式选择由当前用户拥有且权限受限的 dotenv 文件；运行时不搜索 cwd 或父目录。 显式 env 文件拒绝末级符号链接，读取时校验文件身份/权限并限制字节数；先验证全部内容再更新环境，解析失败不留下已加载变量。已有进程变量即使为空也优先；不执行或展开 shell 表达式。父目录可信性、同一文件 inode 的外部并发写入及 Windows/NFS 行为不由此检查保证。各 Provider 的 key 位置、解释器和依赖要求仍以对应 Provider reference 为准。
 
+可选数据依赖安装在专用数据运行时 `~/.local/share/money-craft/venvs/data`（随 `MONEY_CRAFT_DATA_HOME`/`XDG_DATA_HOME` 移动）。系统 `python3` 启动 `money_craft.py` 时，只要该环境存在，入口会透明切换到它；在报告 venv 或其他显式 venv 中运行时不抢占解释器。`MONEY_CRAFT_DATA_PYTHON` 可直接指定受控解释器；旧 `~/.config/money-craft/data-venv` 仅在新环境不存在且路径未显式覆盖时作为迁移兼容回退。不要恢复 cwd 搜索或全局安装。
+
 不得将 key 放进命令行、完整请求 URL、capture、错误文本、报告或 Git。Provider 缺失、依赖缺失、限流或目标不受支持时形成可见 `PROVIDER_GAP`；没有适用于结论的当前正式或可追溯来源时，停止事实型判断，不能用缓存或模型记忆补齐。
 
 ## 口径与差异
