@@ -377,9 +377,15 @@ def allocate_workspace(root: Path) -> tuple[Path, str]:
 
 
 def remove_mutable_tree(path: Path) -> None:
+    # Permissions live on the inode: a hard-linked file may also be a sealed revision elsewhere.
+    # POSIX unlink only needs a writable directory; Windows needs writable files to delete them.
     for item in path.rglob("*"):
-        if not item.is_symlink():
-            os.chmod(item, 0o700 if item.is_dir() else 0o600)
+        if item.is_symlink():
+            continue
+        if item.is_dir():
+            os.chmod(item, 0o700)
+        elif os.name == "nt" or item.stat().st_nlink == 1:
+            os.chmod(item, 0o600)
     os.chmod(path, 0o700)
     shutil.rmtree(path)
 
@@ -638,21 +644,13 @@ def set_tree_read_only(root: Path, *, root_read_only: bool = True) -> None:
 def remove_owned_revision(path: Path) -> None:
     if not TRACKING_REVISION_RE.fullmatch(path.name) or path.is_symlink():
         raise TrackingError("unsafe_cleanup", f"refusing to remove unsafe revision path: {path}")
-    for item in path.rglob("*"):
-        if not item.is_symlink():
-            os.chmod(item, 0o700 if item.is_dir() else 0o600)
-    os.chmod(path, 0o700)
-    shutil.rmtree(path)
+    remove_mutable_tree(path)
 
 
 def remove_staging_directory(path: Path) -> None:
     if not path.name.startswith(".t") or ".staging." not in path.name or path.is_symlink():
         raise TrackingError("unsafe_cleanup", f"refusing to remove unsafe staging path: {path}")
-    for item in path.rglob("*"):
-        if not item.is_symlink():
-            os.chmod(item, 0o700 if item.is_dir() else 0o600)
-    os.chmod(path, 0o700)
-    shutil.rmtree(path)
+    remove_mutable_tree(path)
 
 
 def finalize_tracking(workspace: Path) -> dict[str, Any]:

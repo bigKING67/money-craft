@@ -51,3 +51,18 @@ python3 scripts/storage_check.py
 - 运行中任务、`.keep`、未知目录应保留；此工具不提供历史自动删除。
 - 不根据 `pyvenv.cfg` 扫描并删除存量环境；只清理由新入口本次创建的临时目录。
 - 不增加后台服务，不改 Pi 的打包保留机制或 Server 编译缓存策略。
+
+## 重复证据去重
+
+同一份来源常在 `raw/`、宿主运行账本、`.research/<run>/evidence/` 和归档 revision 中各存一份。可用写时复制克隆（APFS `clonefile`、Linux `FICLONE`）合并字节相同的副本：
+
+```bash
+python3 skills/money-craft/scripts/money_craft.py storage dedupe --root local --json          # 只报告
+python3 skills/money-craft/scripts/money_craft.py storage dedupe --root local --apply --json  # 执行
+```
+
+- 默认 dry-run；只处理 ≥64 KiB、SHA-256 相同、同一设备上的普通文件。克隆后每个路径保留独立 inode、原权限与 mtime，改写其中一份不影响其他副本。
+- sealed revision（只读目录或只读文件）只作为克隆源，从不被替换；已有硬链接的文件、`.working/` 和 `*.staging.*` 进行中目录也不替换。
+- 替换前复核源与目标未变化，并校验克隆内容的 SHA-256；不一致时记为 `changed_during_scan` 并保留原文件。文件系统不支持克隆时返回 `clone_unsupported`，不退回硬链接或复制。
+- 克隆共享的块对 `stat`/`du` 不可见：节省的空间用 `df` 观察；再次运行会把已克隆的副本重新计入 `duplicate_bytes`（上限值，重复执行无害）。
+- 不要与正在运行的 `research`/`track` 命令并发执行。回执不含绝对路径和文件内容。

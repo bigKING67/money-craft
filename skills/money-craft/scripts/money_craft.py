@@ -29,6 +29,7 @@ from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 import fred_adapter
+import storage_dedupe
 import earnings_update
 import earnings_baseline
 import earnings_crosscheck
@@ -1070,6 +1071,14 @@ def build_parser() -> argparse.ArgumentParser:
     track_verify.add_argument("--no-require-read-only", action="store_true")
     track_verify.add_argument("--json", action="store_true")
 
+    storage = subparsers.add_parser("storage")
+    storage_subparsers = storage.add_subparsers(dest="storage_command", required=True)
+    storage_dedupe_parser = storage_subparsers.add_parser("dedupe")
+    storage_dedupe_parser.add_argument("--root", required=True, type=Path)
+    storage_dedupe_parser.add_argument("--apply", action="store_true")
+    storage_dedupe_parser.add_argument("--min-bytes", type=int, default=storage_dedupe.DEFAULT_MIN_BYTES)
+    storage_dedupe_parser.add_argument("--json", action="store_true")
+
     report = subparsers.add_parser("report")
     report_subparsers = report.add_subparsers(dest="report_command", required=True)
     report_render = report_subparsers.add_parser("render")
@@ -2011,6 +2020,15 @@ def run_track(args: argparse.Namespace) -> int:
     return 0 if result.get("valid", True) else EXIT_PROVIDER
 
 
+def run_storage(args: argparse.Namespace) -> int:
+    try:
+        result = storage_dedupe.dedupe(args.root, apply=args.apply, min_bytes=args.min_bytes)
+    except storage_dedupe.StorageError as exc:
+        raise WorkflowError(exc.kind, sanitize_message(exc)) from exc
+    print_json(result)
+    return 0 if result["valid"] else EXIT_PROVIDER
+
+
 def run_report(args: argparse.Namespace) -> int:
     try:
         if args.report_command == "verify":
@@ -2123,6 +2141,8 @@ def main() -> int:
             return run_track(args)
         if args.command == "report":
             return run_report(args)
+        if args.command == "storage":
+            return run_storage(args)
         raise MoneyCraftError("usage_error", "unsupported command", exit_code=EXIT_USAGE)
     except WorkflowError as exc:
         print_json(

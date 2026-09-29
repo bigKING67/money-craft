@@ -421,8 +421,9 @@ isolated acceptance test. Every installation is a symlink-free atomic copy with
 
 ## Validation
 
-For bounded test environments, automatic dependency cleanup, and a read-only
-storage inventory, see [local test storage management](docs/test-storage.md).
+For bounded test environments, automatic dependency cleanup, a read-only
+storage inventory, and copy-on-write deduplication of identical evidence
+(`money_craft.py storage dedupe`), see [local test storage management](docs/test-storage.md).
 
 ```bash
 npm test
