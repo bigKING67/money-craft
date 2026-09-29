@@ -5,6 +5,7 @@ import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/money-craft/scripts"))
 import money_craft as cli
+import fuyao_client
 import research_run
 import tracking_workflow
 
@@ -21,10 +22,10 @@ class CloseoutInputTests(unittest.TestCase):
         for data in ({"label": "\ud800"}, {"\udfff": "value"}, {"items": ["\ud800"]}):
             payload = {"code": 0, "message": "ok", "request_id": "id", "data": data}
             with self.assertRaises(cli.MoneyCraftError) as caught:
-                cli.parse_json(json.dumps(payload).encode())
+                fuyao_client.parse_json(json.dumps(payload).encode())
             self.assertEqual(caught.exception.exit_code, cli.EXIT_SCHEMA)
         good = {"code": 0, "message": "中文", "request_id": "id", "data": {"label": "😀"}}
-        self.assertEqual(cli.parse_json(json.dumps(good).encode()), good)
+        self.assertEqual(fuyao_client.parse_json(json.dumps(good).encode()), good)
 
     def test_upper_date_range_and_leap_year(self):
         cli.validate_range("9999-01-01", "9999-01-02", max_years=10)

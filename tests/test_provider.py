@@ -232,7 +232,7 @@ class InputAndCaptureTests(unittest.TestCase):
         self.assertEqual(mc.date_to_ms("2026-01-01"), 1767196800000)
 
     def test_calendar_filters_locally(self) -> None:
-        data = mc.parse_json(fixture_bytes("calendar.success.synthetic.json"))["data"]
+        data = fuyao_client.parse_json(fixture_bytes("calendar.success.synthetic.json"))["data"]
         filtered = mc.filter_calendar(data, "2026-01-02", "2026-01-02")
         self.assertEqual(filtered["item"], [{"date": "20260102", "date_ms": 2}])
 
@@ -243,7 +243,7 @@ class InputAndCaptureTests(unittest.TestCase):
             operation="snapshot",
             path="/api/a-share/prices/snapshot",
             parameters={"thscodes": "600519.SH"},
-            payload=mc.parse_json(raw),
+            payload=fuyao_client.parse_json(raw),
             raw_response=raw,
             fetched_at="2026-08-23T00:00:00Z",
         )
@@ -266,7 +266,7 @@ class InputAndCaptureTests(unittest.TestCase):
             operation="snapshot",
             path="/snapshot",
             parameters={},
-            payload=mc.parse_json(raw),
+            payload=fuyao_client.parse_json(raw),
             raw_response=raw,
             fetched_at="2026-08-23T00:00:00Z",
         )

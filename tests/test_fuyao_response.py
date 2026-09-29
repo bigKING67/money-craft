@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from test_provider import FakeOpener, FakeResponse
 import money_craft as mc
+import fuyao_client
 
 class FuyaoResponseTests(unittest.TestCase):
     def test_duplicate_keys_and_null_success_are_rejected(self):
@@ -28,7 +29,7 @@ class FuyaoResponseTests(unittest.TestCase):
     def test_valid_empty_list_and_error_null_are_preserved(self):
         for code,data in ((0,{'timestamp':1,'item':[]}),(2001,None)):
             raw=json.dumps({'code':code,'message':'fixture','request_id':'r','data':data}).encode()
-            self.assertEqual(mc.parse_json(raw)['data'],data)
+            self.assertEqual(fuyao_client.parse_json(raw)['data'],data)
 
     def test_cli_invalid_response_creates_no_capture(self):
         script=r'''
