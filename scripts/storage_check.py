@@ -12,10 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def size(path):
     total = 0
+    seen = set()  # hard links share blocks; count each inode once
     for directory, dirs, files in os.walk(path, followlinks=False):
         dirs[:] = [name for name in dirs if not (Path(directory) / name).is_symlink()]
         for name in files:
             stat = (Path(directory) / name).lstat()
+            if (stat.st_dev, stat.st_ino) in seen:
+                continue
+            seen.add((stat.st_dev, stat.st_ino))
             total += stat.st_blocks * 512
     return total
 
