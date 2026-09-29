@@ -13,7 +13,7 @@ class FuyaoTransportTests(unittest.TestCase):
     def test_redirect_rejects_https_downgrade(self):
         request=urllib.request.Request('https://fixture.invalid/data')
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            mc.SameHostRedirectHandler().redirect_request(request,None,302,'redirect',{},'http://fixture.invalid/data')
+            fuyao_client.SameHostRedirectHandler().redirect_request(request,None,302,'redirect',{},'http://fixture.invalid/data')
         caught.exception.close()
 
     def test_http_error_body_is_closed(self):
@@ -36,12 +36,12 @@ class FuyaoTransportTests(unittest.TestCase):
     def test_json_numeric_errors_are_schema_errors(self):
         for raw in (b'{"code":false,"message":"ok","request_id":"r","data":{}}',b'{"code":0,"message":"ok","request_id":"r","data":{"value":1e999999999999999999999}}'):
             with self.subTest(raw=raw),self.assertRaises(mc.MoneyCraftError) as caught:
-                mc.parse_json(raw)
+                fuyao_client.parse_json(raw)
             self.assertEqual(caught.exception.exit_code,mc.EXIT_SCHEMA)
 
     def test_nonfinite_retry_after_is_ignored(self):
         for value in ('NaN','Infinity','-Infinity'):
-            with self.subTest(value=value):self.assertIsNone(mc.bounded_retry_after({'Retry-After':value}))
+            with self.subTest(value=value):self.assertIsNone(fuyao_client.bounded_retry_after({'Retry-After':value}))
 
     def test_cleanup_error_preserves_status_without_private_details(self):
         class Body(io.BytesIO):
@@ -59,7 +59,7 @@ class FuyaoTransportTests(unittest.TestCase):
 
     def test_recursive_json_is_schema_error(self):
         with self.assertRaises(mc.MoneyCraftError) as caught:
-            mc.parse_json(b'{"data":'+b'['*2000+b'0'+b']'*2000+b'}')
+            fuyao_client.parse_json(b'{"data":'+b'['*2000+b'0'+b']'*2000+b'}')
         self.assertEqual(caught.exception.exit_code,mc.EXIT_SCHEMA)
 
     def test_length_contract_keeps_exact_body_and_rejects_extra(self):
@@ -83,7 +83,7 @@ class FuyaoTransportTests(unittest.TestCase):
         for oversized in (False,True):
             with self.subTest(oversized=oversized):
                 body=Body(b'x'*33 if oversized else b'')
-                handler=mc.SameHostRedirectHandler()
+                handler=fuyao_client.SameHostRedirectHandler()
                 class Parent:
                     def open(self,*args,**kwargs):raise AssertionError('target must not open')
                 handler.add_parent(Parent())
@@ -109,7 +109,7 @@ class FuyaoTransportTests(unittest.TestCase):
                 super().close()
                 raise OSError('private cleanup fixture')
         body=Body(b'')
-        handler=mc.SameHostRedirectHandler()
+        handler=fuyao_client.SameHostRedirectHandler()
         class Parent:
             def open(self,*args,**kwargs):raise AssertionError('target must not open after cleanup failure')
         handler.add_parent(Parent())

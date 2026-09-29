@@ -46,11 +46,8 @@ from cli_common import (
 )
 from fuyao_client import (
     FuyaoCredential,
-    SameHostRedirectHandler,
     fuyao_api_key_path,
     load_fuyao_credential,
-    parse_json,
-    bounded_retry_after,
     FuyaoClient,
     API_KEY_ENV,
 )
@@ -680,6 +677,8 @@ def doctor_payload() -> dict[str, Any]:
                     "SKILL.md",
                     "VERSION",
                     "scripts/money_craft.py",
+                    "scripts/cli_common.py",
+                    "scripts/fuyao_client.py",
                     "scripts/fred_adapter.py",
                     "scripts/runtime_paths.py",
                     "scripts/yfinance_adapter.py",
