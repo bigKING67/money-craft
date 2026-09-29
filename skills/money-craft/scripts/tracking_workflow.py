@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
-import hashlib
 import json
 import os
 import re
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import financial_rigor
+from fsutil import sha256_file
 import report_audit
 import research_workflow
 
@@ -65,14 +65,6 @@ def utc_now() -> str:
 
 def json_bytes(payload: Any) -> bytes:
     return (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False) + "\n").encode("utf-8")
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def file_record(path: Path) -> dict[str, Any]:

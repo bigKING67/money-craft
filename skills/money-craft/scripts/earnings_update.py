@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from fsutil import sha256_file as digest
+
 import financial_rigor as finance
 import research_workflow as workflow
 
@@ -48,14 +50,6 @@ def number(value: Any) -> Decimal:
 
 def text_number(value: Decimal) -> str:
     return str(value)  # Preserve Decimal precision; large exponents stay bounded.
-
-
-def digest(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def validate_sources(payload: dict[str, Any], base: Path) -> dict[str, dict[str, Any]]:
