@@ -587,6 +587,29 @@ raise SystemExit(report_renderer.main())
 
 
     @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
+    def test_documented_local_evidence_source_index_renders_portably(self):
+        # report-rendering.md: local evidence as a bare path renders; a relative Markdown link does not.
+        guidance = (ROOT / "skills/money-craft/references/report-rendering.md").read_text(encoding="utf-8")
+        self.assertIn("`- [S11] evidence/S11-official.pdf`", guidance)
+        for line, portable in (("- [S01] evidence/S01-official.pdf", True),
+                               ("- [S01] `evidence/S01-official.pdf`", True),
+                               ("- [S01] [年报](evidence/S01-official.pdf)", False)):
+            with self.subTest(line=line), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "report.md"
+                source.write_text(SAMPLE_REPORT.replace("- [S01] https://example.invalid/report.pdf", line))
+                output, pdf = root / "report.html", root / "report.pdf"
+                def generate(_html_path, pdf_path):
+                    pdf_path.write_bytes(b"%PDF fixture")
+                    return 1
+                with mock.patch.object(report_renderer, "write_pdf", side_effect=generate):
+                    if portable:
+                        self.assertTrue(report_renderer.render_report(source, output_html=output, output_pdf=pdf)["valid"])
+                    else:
+                        with self.assertRaises(Exception):
+                            report_renderer.render_report(source, output_html=output, output_pdf=pdf)
+
+    @unittest.skipUnless(HAS_MARKDOWN, "optional markdown package required")
     def test_markdown_body_rejects_active_html(self):
         fragments = ('<script>alert(1)</script>', '<![CDATA[><script>alert(1)</script>]]>', '<img src="x" onerror="alert(1)">',
             '<iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"></iframe>', '<meta http-equiv="refresh" content="0;url=https://example.invalid">',
