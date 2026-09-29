@@ -107,6 +107,7 @@ class StorageDedupeTests(unittest.TestCase):
         staging = self.write("tracking/.t1.staging.x/body.bin")
         before = linked.stat().st_ino
         result = self.run_dedupe(apply=True)
+        self.assertEqual(result["clones_created"], 1)  # only raw/c.pdf; the hard-linked inode is the source
         self.assertEqual(result["mutable_areas_skipped"], 2)
         self.assertEqual(linked.stat().st_ino, before)
         self.assertEqual(linked.stat().st_nlink, 2)
@@ -131,19 +132,79 @@ class StorageDedupeTests(unittest.TestCase):
     def test_unsupported_filesystem_stops_without_changes(self) -> None:
         self.write("raw/a.pdf")
         target = self.write("runs/r1/body.bin")
-        before = target.stat().st_ino
+        self.write("raw/b.pdf", PAYLOAD * 2)
+        other = self.write("runs/r2/body.bin", PAYLOAD * 2)
+        before = (target.stat().st_ino, other.stat().st_ino)
+        calls = []
 
-        def unsupported(_source: Path, _destination: Path) -> None:
+        def unsupported(source: Path, _destination: Path) -> None:
+            calls.append(source)
             raise OSError(errno.ENOTSUP, "not supported")
 
         result = self.run_dedupe(apply=True, clone=unsupported)
         self.assertFalse(result["valid"])
         self.assertEqual(result["clones_created"], 0)
-        self.assertEqual(result["error_count"], 1)
-        self.assertEqual(target.stat().st_ino, before)
+        self.assertEqual(result["error_kinds"], {"clone_unsupported": 1})
+        self.assertEqual(len(calls), 1)  # later groups are not attempted
+        self.assertEqual((target.stat().st_ino, other.stat().st_ino), before)
         with mock.patch.object(storage_dedupe, "platform_clone", return_value=None):
             with self.assertRaises(storage_dedupe.StorageError):
                 storage_dedupe.dedupe(self.root, apply=True)
+
+    def test_target_changed_after_hashing_is_left_alone(self) -> None:
+        self.write("raw/a.pdf")
+        target = self.write("runs/r1/body.bin")
+        before = target.stat().st_ino
+        original = storage_dedupe.sha256_file
+
+        def touch_after_hash(path: Path) -> str:
+            digest = original(path)
+            if path == target:
+                os.utime(target, ns=(1, 1))
+            return digest
+
+        with mock.patch.object(storage_dedupe, "sha256_file", side_effect=touch_after_hash):
+            result = self.run_dedupe(apply=True)
+        self.assertEqual(result["errors"], [{"path": "runs/r1/body.bin", "kind": "changed_during_scan"}])
+        self.assertEqual(target.stat().st_ino, before)
+
+    def test_foreign_owner_and_root_bypass_are_not_replaceable(self) -> None:
+        self.write("raw/a.pdf")
+        target = self.write("runs/r1/body.bin")
+        with mock.patch.object(storage_dedupe.os, "geteuid", return_value=target.stat().st_uid + 1):
+            self.assertEqual(self.run_dedupe(apply=True)["clones_created"], 0)
+        for sealed in (target.parent, self.root / "raw"):
+            os.chmod(sealed, 0o555)  # sealed directories; root would still pass os.access
+        with mock.patch.object(storage_dedupe.os, "access", return_value=True):
+            result = self.run_dedupe(apply=True)
+        self.assertEqual(result["clones_created"], 0)
+        self.assertEqual(result["non_replaceable_copies"], 1)
+
+    def test_cleanup_failure_is_recorded_without_aborting(self) -> None:
+        self.write("raw/a.pdf")
+        self.write("runs/r1/body.bin")
+        with mock.patch.object(storage_dedupe.Path, "unlink", side_effect=PermissionError("denied")):
+            result = self.run_dedupe(apply=True)
+        self.assertEqual(result["clones_created"], 1)
+        self.assertEqual(result["error_kinds"], {"cleanup_failed": 1})
+
+    def test_linux_clone_keeps_errno_and_removes_destination(self) -> None:
+        import fcntl
+
+        source = self.write("raw/a.pdf")
+        destination = self.root / "raw/clone.pdf"
+        failure = OSError(errno.EOPNOTSUPP, "Operation not supported")
+        with mock.patch.object(fcntl, "ioctl", side_effect=failure):
+            with self.assertRaises(OSError) as caught:
+                storage_dedupe._linux_clone(source, destination)
+            self.assertEqual(caught.exception.errno, errno.EOPNOTSUPP)
+            self.assertFalse(destination.exists())
+            with mock.patch.object(storage_dedupe.Path, "unlink", side_effect=PermissionError("denied")):
+                with self.assertRaises(OSError) as masked:
+                    storage_dedupe._linux_clone(source, self.root / "raw/clone2.pdf")
+            self.assertEqual(masked.exception.errno, errno.EOPNOTSUPP)
+        self.assertIn(errno.EOPNOTSUPP, storage_dedupe.UNSUPPORTED_ERRNOS)
+        self.assertIn(errno.ENOSYS, storage_dedupe.UNSUPPORTED_ERRNOS)
 
     def test_unreadable_file_is_reported_without_aborting(self) -> None:
         self.write("raw/a.pdf")
@@ -172,13 +233,21 @@ class StorageDedupeTests(unittest.TestCase):
         with self.assertRaises(storage_dedupe.StorageError):
             storage_dedupe.dedupe(link)
 
-    @unittest.skipUnless(sys.platform == "darwin", "APFS clonefile")
+    @unittest.skipUnless(sys.platform == "darwin" or sys.platform.startswith("linux"), "clonefile/FICLONE platforms")
     def test_real_platform_clone(self) -> None:
         keeper = self.write("raw/a.pdf")
         target = self.write("runs/r1/body.bin", mode=0o600)
+        before = target.stat().st_ino
         result = storage_dedupe.dedupe(self.root, apply=True)
         if result["error_count"]:
-            self.skipTest("temporary directory does not support clones")
+            # Filesystems without reflinks (ext4, tmpfs) must fail closed: nothing replaced, no temp files.
+            self.assertFalse(result["valid"])
+            self.assertEqual(result["clones_created"], 0)
+            self.assertEqual(result["errors"], [])  # clone_unsupported carries no path
+            self.assertEqual(target.stat().st_ino, before)
+            self.assertEqual(target.read_bytes(), PAYLOAD)
+            self.assertEqual(list(self.root.rglob(".*.dedup-*")), [])
+            self.skipTest(f"{sys.platform}: clone unsupported here; fail-closed path verified")
         self.assertEqual(result["clones_created"], 1)
         self.assertNotEqual(target.stat().st_ino, keeper.stat().st_ino)
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)

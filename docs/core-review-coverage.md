@@ -2,7 +2,7 @@
 
 更新：2026-09-29。范围仅 `skills/money-craft/scripts/*.py` 的 20 个顶层运行时文件，不是全仓 canonical 审查或评分。
 
-**19 REVIEWED_BOUNDED / 1 PARTIAL / 0 PENDING**。2026-09-29 新增或迁出的文件尚未写入机器台账。各文件完成声明范围整文件读取、问题处置和相关验证；支持边界外的环境不被升级为已验证。当前源码哈希、行数与历史证据路径见[机器台账](../acceptance/core-review-coverage-20260917.json)，本次收口见[统一记录](../acceptance/core-closeout-20260919.json)。
+**20 REVIEWED_BOUNDED / 0 PARTIAL / 0 PENDING**。2026-09-29 新增或迁出的文件尚未写入机器台账。各文件完成声明范围整文件读取、问题处置和相关验证；支持边界外的环境不被升级为已验证。当前源码哈希、行数与历史证据路径见[机器台账](../acceptance/core-review-coverage-20260917.json)，本次收口见[统一记录](../acceptance/core-closeout-20260919.json)。
 
 | 文件 | 状态 | 声明范围 |
 |---|---|---|
@@ -17,7 +17,7 @@
 | [fuyao_client.py](../skills/money-craft/scripts/fuyao_client.py) | REVIEWED_BOUNDED | 2026-09-29 自 money_craft.py 原样迁出（语法树比对一致）：Fuyao 凭据、同主机重定向、有界传输、重试与响应准入；沿用 money_craft.py 既有复核结论。 |
 | [fsutil.py](../skills/money-craft/scripts/fsutil.py) | REVIEWED_BOUNDED | 2026-09-29 合并 4 份逐字相同的分块 SHA-256 实现，调用方保留原属性名。 |
 | [portfolio_audit.py](../skills/money-craft/scripts/portfolio_audit.py) | REVIEWED_BOUNDED | 2026-09-29 整文件对照 portfolio-audit.md 核查字段/上限/日期/币种/费用/覆盖/发行人/重叠/情景公式与判定；补测损失与发行人上限的等号边界，未发现缺陷。来源哈希不证明转录与发行人映射。 |
-| [storage_dedupe.py](../skills/money-craft/scripts/storage_dedupe.py) | PARTIAL | 2026-09-29 新增写时复制去重；经 `/code-review high` 与修复及 12 项测试（含真实 APFS clonefile），未做独立整文件复核；Linux FICLONE 路径未实机验证。 |
+| [storage_dedupe.py](../skills/money-craft/scripts/storage_dedupe.py) | REVIEWED_BOUNDED | 2026-09-29 独立整文件复核；修复回执不显示错误类型、清理异常中断运行、非属主/root 绕过只读目录的替换判定，ENOSYS 归为不支持；16 项测试。实机验证：macOS APFS 克隆成功，Linux（py3.10）reflink 克隆成功，tmpfs 不支持时安全失败。xattr/ACL 随克隆源、FICLONE 仅 x86/arm 已记入文档。 |
 | [money_craft.py](../skills/money-craft/scripts/money_craft.py) | REVIEWED_BOUNDED | 整文件 CLI/配置/委派/错误语义与独立复核闭合（Provider 传输已迁至 fuyao_client.py）；凭据HTTP头准入、日期上界和UTF8响应补齐。 |
 | [report_audit.py](../skills/money-craft/scripts/report_audit.py) | REVIEWED_BOUNDED | 整文件核查元数据、章节/来源解析、引用与占位符；修复索引后漏审、空来源跨行、非规范日期。文件编码/I/O及 Markdown 全语法不作保证。 |
 | [report_renderer.py](../skills/money-craft/scripts/report_renderer.py) | REVIEWED_BOUNDED | 整文件与独立复核闭合；同树可见数据投影、状态列绑定、审计计数、可信资产及SVG数值；真实三页PDF和宽窄/明暗HTML另附产物证据。 |
