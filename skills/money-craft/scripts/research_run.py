@@ -1500,7 +1500,7 @@ def document_audits(
     try:
         actual["security_id"] = report_audit.security_id_from_metadata(metadata)
     except ValueError:
-        pass
+        pass  # report_audit.audit_file already reports the parse reason; avoid a duplicate error
     identity_errors = [f"{key} must match plan.json" for key, value in expected.items() if actual.get(key) != value]
     if identity_errors:
         report_result = dict(report_result)

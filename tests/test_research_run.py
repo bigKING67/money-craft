@@ -1487,6 +1487,17 @@ runpy.run_path(cli, run_name='__main__')
                 checks["report"]["errors"],
             )
 
+    def test_document_identity_error_keeps_security_id_parse_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.md"
+            text = valid_report("money-craft.report.v1", "research").replace(
+                "thscode: 000333.SZ\n", "security_id: CN-SZ:000333\nthscode: 600519.SH\n", 1
+            )
+            path.write_text(text, encoding="utf-8")
+            checks = research_run.document_audits(path, example_plan(), "money-craft.report.v1")
+            self.assertFalse(checks["valid"])
+            self.assertEqual(checks["report"]["errors"].count("security_id and thscode identify different securities"), 1)
+
     def test_citation_binding_cannot_pass_without_evidence_map_or_with_wrong_link(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "report.md"
