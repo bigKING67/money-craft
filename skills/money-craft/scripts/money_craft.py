@@ -722,7 +722,8 @@ def validate_capture_args(capture_dir: str | None, source_id: str | None) -> tup
     return Path(capture_dir).expanduser().resolve(), source_id
 
 
-def atomic_write(path: Path, data: bytes) -> None:
+def write_new_file(path: Path, data: bytes) -> None:
+    # Exclusive, fsynced write into a private staging directory; publication is the directory rename.
     with path.open("xb") as handle:
         handle.write(data)
         handle.flush()
@@ -776,9 +777,9 @@ def capture_result(
             "files": ["request.json", "response.json", "capture.json"],
         }
         manifest_bytes = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        atomic_write(staging / "request.json", request_bytes)
-        atomic_write(staging / "response.json", result.raw_response)
-        atomic_write(staging / "capture.json", manifest_bytes)
+        write_new_file(staging / "request.json", request_bytes)
+        write_new_file(staging / "response.json", result.raw_response)
+        write_new_file(staging / "capture.json", manifest_bytes)
         os.replace(staging, destination)
     except Exception:
         if staging.exists():
