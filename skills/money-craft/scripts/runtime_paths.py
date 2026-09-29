@@ -39,6 +39,54 @@ class RuntimePathError(ValueError):
     """Raised when a runtime path or explicit env file is unsafe or invalid."""
 
 
+class PrivateFileError(RuntimePathError):
+    """Raised by read_private_text; kind is missing_configuration or invalid_configuration."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def read_private_text(path: Path, *, subject: str, max_bytes: int) -> str:
+    """Read a small owner-only secret file without following or racing a swapped path.
+
+    The path must be a regular, non-symlink file owned by the current user with no
+    group/other permissions. The opened descriptor is re-checked against the inspected
+    inode, and at most max_bytes + 1 bytes are read so growth after inspection is caught.
+    """
+
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise PrivateFileError("missing_configuration", f"{subject} does not exist") from exc
+    except OSError as exc:
+        raise PrivateFileError("invalid_configuration", f"cannot inspect {subject}") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise PrivateFileError("invalid_configuration", f"{subject} must be a regular file, not a symlink")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise PrivateFileError("invalid_configuration", f"{subject} must be owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise PrivateFileError("invalid_configuration", f"{subject} permissions must be 0600 or stricter")
+    if metadata.st_size < 1 or metadata.st_size > max_bytes:
+        raise PrivateFileError("invalid_configuration", f"{subject} has an invalid size")
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if ((opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or opened.st_uid != metadata.st_uid
+                    or stat.S_IMODE(opened.st_mode) & 0o077):
+                raise PrivateFileError("invalid_configuration", f"{subject} changed or is unsafe to read")
+            raw = stream.read(max_bytes + 1)
+        if not 1 <= len(raw) <= max_bytes:
+            raise PrivateFileError("invalid_configuration", f"{subject} has an invalid size")
+        return raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PrivateFileError("invalid_configuration", f"cannot read {subject}") from exc
+
+
 def _environment(environment: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if environment is None else environment
 
@@ -168,34 +216,7 @@ def load_explicit_env_file(environment: MutableMapping[str, str] | None = None) 
     path = _absolute_override(environ, ENV_FILE_ENV, resolve=False)
     if path is None:
         return None
-    try:
-        metadata = path.lstat()
-    except OSError as exc:
-        raise RuntimePathError(f"cannot inspect {ENV_FILE_ENV}") from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise RuntimePathError(f"{ENV_FILE_ENV} must select a regular file, not a symlink")
-    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
-        raise RuntimePathError(f"{ENV_FILE_ENV} must select a file owned by the current user")
-    if stat.S_IMODE(metadata.st_mode) & 0o077:
-        raise RuntimePathError(f"{ENV_FILE_ENV} file permissions must be 0600 or stricter")
-    if metadata.st_size < 1 or metadata.st_size > MAX_ENV_FILE_BYTES:
-        raise RuntimePathError(f"{ENV_FILE_ENV} file has an invalid size")
-    try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        fd = os.open(path, flags)
-        with os.fdopen(fd, "rb") as stream:
-            opened = os.fstat(stream.fileno())
-            if ((opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
-                    or not stat.S_ISREG(opened.st_mode)
-                    or opened.st_uid != metadata.st_uid
-                    or stat.S_IMODE(opened.st_mode) & 0o077):
-                raise RuntimePathError(f"{ENV_FILE_ENV} changed or is unsafe to read")
-            raw = stream.read(MAX_ENV_FILE_BYTES + 1)
-        if not 1 <= len(raw) <= MAX_ENV_FILE_BYTES:
-            raise RuntimePathError(f"{ENV_FILE_ENV} file has an invalid size")
-        text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise RuntimePathError(f"cannot read {ENV_FILE_ENV}") from exc
+    text = read_private_text(path, subject=f"{ENV_FILE_ENV} file", max_bytes=MAX_ENV_FILE_BYTES)
     pending: dict[str, str] = {}
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()

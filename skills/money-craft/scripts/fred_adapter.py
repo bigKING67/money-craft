@@ -10,7 +10,6 @@ import math
 import os
 import re
 import socket
-import stat
 import time
 import urllib.error
 import urllib.parse
@@ -164,53 +163,10 @@ def load_credential(
     path = api_key_path(home, environ)
     path_display = runtime_paths.display_path(path, home=home)
     try:
-        metadata = path.lstat()
-    except FileNotFoundError as exc:
-        raise FredAdapterError(
-            "missing_configuration",
-            f"configure {API_KEY_ENV} or {path_display}",
-        ) from exc
-    except OSError as exc:
-        raise FredAdapterError("invalid_configuration", f"cannot inspect {path_display}") from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise FredAdapterError(
-            "invalid_configuration",
-            f"{path_display} must be a regular file, not a symlink",
-        )
-    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
-        raise FredAdapterError(
-            "invalid_configuration",
-            f"{path_display} must be owned by the current user",
-        )
-    if stat.S_IMODE(metadata.st_mode) & 0o077:
-        raise FredAdapterError(
-            "invalid_configuration",
-            f"{path_display} permissions must be 0600 or stricter",
-        )
-    if metadata.st_size < 1 or metadata.st_size > MAX_API_KEY_BYTES:
-        raise FredAdapterError(
-            "invalid_configuration",
-            f"{path_display} has an invalid size",
-        )
-    try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        fd = os.open(path, flags)
-        with os.fdopen(fd, "rb") as stream:
-            opened = os.fstat(stream.fileno())
-            if ((opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
-                    or not stat.S_ISREG(opened.st_mode)
-                    or opened.st_uid != metadata.st_uid
-                    or stat.S_IMODE(opened.st_mode) & 0o077):
-                raise FredAdapterError("invalid_configuration", f"{path_display} changed or is unsafe to read")
-            raw = stream.read(MAX_API_KEY_BYTES + 1)
-        if not 1 <= len(raw) <= MAX_API_KEY_BYTES:
-            raise FredAdapterError("invalid_configuration", f"{path_display} has an invalid size")
-        value = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise FredAdapterError(
-            "invalid_configuration",
-            f"cannot read {path_display}",
-        ) from exc
+        value = runtime_paths.read_private_text(path, subject=path_display, max_bytes=MAX_API_KEY_BYTES)
+    except runtime_paths.PrivateFileError as exc:
+        message = f"configure {API_KEY_ENV} or {path_display}" if exc.kind == "missing_configuration" else str(exc)
+        raise FredAdapterError(exc.kind, message) from exc
     if "\n" in value.rstrip("\n") or "\r" in value:
         raise FredAdapterError(
             "invalid_configuration",
