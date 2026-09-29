@@ -7,7 +7,6 @@ import argparse
 import contextlib
 import os
 import tempfile
-import hashlib
 import html
 from html.parser import HTMLParser
 import json
@@ -17,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
+
+from fsutil import sha256_file
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
@@ -95,14 +96,6 @@ class ParsedReport:
     metadata: dict[str, str]
     markdown_body: str
     source_text: str
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def load_json(path: Path | None) -> dict[str, Any] | list[Any] | None:

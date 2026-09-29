@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from research_run import sha256_file
+from fsutil import sha256_file
 
 SCHEMA = "money-craft.storage-dedupe.v1"
 DEFAULT_MIN_BYTES = 64 * 1024
