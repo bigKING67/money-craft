@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'skills/money-craft/scripts'))
 import money_craft as mc
+import fuyao_client
 
 
 class FuyaoHttpsTests(unittest.TestCase):
@@ -47,7 +48,7 @@ class FuyaoHttpsTests(unittest.TestCase):
                     self.end_headers()
                     self.wfile.write(b'partial')
                 elif path.startswith('/oversized/'):
-                    body = b'x'*(mc.MAX_RESPONSE_BYTES+1)
+                    body = b'x'*(fuyao_client.MAX_RESPONSE_BYTES+1)
                     self.send_response(302)
                     self.send_header('Location','/result')
                     self.send_header('Content-Length',str(len(body)))
@@ -122,7 +123,7 @@ class FuyaoHttpsTests(unittest.TestCase):
 
     def test_default_https_opener_bounds_redirect_body(self):
         # Smaller test bound exercises the same production drain without a 10 MiB fixture.
-        with mock.patch.object(mc,'MAX_RESPONSE_BYTES',1024):
+        with mock.patch.object(fuyao_client,'MAX_RESPONSE_BYTES',1024):
             with self.assertRaises(mc.MoneyCraftError) as caught:
                 self.client('oversized',[]).request('snapshot','/snapshot',{})
         self.assertEqual(caught.exception.kind,'response_too_large')
