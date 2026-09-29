@@ -103,6 +103,16 @@ class PortfolioTests(unittest.TestCase):
         for p in variants:
             with self.subTest(payload=p):self.assertFalse(self.run_input(p)['valid'])
 
+    def test_limits_are_breached_only_when_strictly_exceeded(self):
+        self.payload['scenarios'][0].update(asset_returns={'US:A':'-0.2','US:B':'-0.2'},fx_returns={'USD':'0'})
+        self.payload['max_issuer_weight']='0.46'  # X = 0.6*0.5 + 0.4*0.4
+        result=self.run_input()
+        self.assertEqual(result['scenarios'][0]['loss_constraint'],'WITHIN_SCENARIO')
+        self.assertEqual(result['issuers'][0]['known_weight'],'0.46')
+        self.assertEqual(result['issuers'][0]['constraint_status'],'UNVERIFIED')  # partial holdings
+        self.payload['max_issuer_weight']='0.45'
+        self.assertEqual(self.run_input()['issuers'][0]['constraint_status'],'BREACHED')
+
     def test_mixed_dates_rejected_even_with_matching_sources(self):
         self.payload['sources'][1]['as_of']='2026-07-01'
         self.payload['funds'][1]['holdings']['as_of']='2026-07-01'
