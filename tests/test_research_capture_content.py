@@ -46,7 +46,7 @@ os.environ['FUYAO_API_KEY']='synthetic-fixture-key'
 class Response(io.BytesIO):headers={}
 class Opener:
     def open(self,*a,**k):return Response(b'{"code":0,"message":"fixture","request_id":"r","data":{"timestamp":1,"value":1e-7,"ratio":1.2300,"item":[{"date":"20260101"},{"date":"20260102"}]}}')
-mc.urllib.request.build_opener=lambda *a:Opener()
+import urllib.request;urllib.request.build_opener=lambda *a:Opener()
 sys.argv=['money_craft.py','data','calendar','--start','2026-01-02','--end','2026-01-02','--capture-dir',sys.argv[2],'--source-id','S10']
 raise SystemExit(mc.main())
 '''

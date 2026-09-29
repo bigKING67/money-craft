@@ -21,7 +21,7 @@ class Opener:
     def open(self,*args,**kwargs):
         calls.append(1)
         return Response(json.dumps({'code':0,'message':'fixture','request_id':'r','data':data}).encode())
-mc.urllib.request.build_opener=lambda *args:Opener()
+import urllib.request;urllib.request.build_opener=lambda *args:Opener()
 sys.argv=['money_craft.py','data',sys.argv[2],'--thscodes','999999.SH,999998.SZ','--capture-dir',sys.argv[4],'--source-id','S01']
 result=mc.main()
 assert len(calls)==1

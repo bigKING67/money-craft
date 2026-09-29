@@ -46,7 +46,7 @@ class Opener:
         self.calls+=1
         return Response(raw)
 opener=Opener()
-mc.urllib.request.build_opener=lambda *args:opener
+import urllib.request;urllib.request.build_opener=lambda *args:opener
 sys.argv=['money_craft.py','data','snapshot','--thscodes','600519.SH','--capture-dir',sys.argv[2],'--source-id','S01']
 code=mc.main()
 assert opener.calls==1

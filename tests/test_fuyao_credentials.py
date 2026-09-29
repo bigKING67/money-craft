@@ -10,6 +10,7 @@ from unittest import mock
 SCRIPTS = Path(__file__).resolve().parents[1]/'skills/money-craft/scripts'
 sys.path.insert(0, str(SCRIPTS))
 import money_craft as mc
+import fuyao_client
 
 
 class FuyaoCredentialTests(unittest.TestCase):
@@ -52,7 +53,7 @@ class FuyaoCredentialTests(unittest.TestCase):
             original=Path.lstat
             def inspect(target,*args,**kwargs):
                 info=original(target,*args,**kwargs)
-                if target==path:path.write_bytes(b'x'*(mc.MAX_API_KEY_BYTES+1))
+                if target==path:path.write_bytes(b'x'*(fuyao_client.MAX_API_KEY_BYTES+1))
                 return info
             with mock.patch.object(Path,'lstat',inspect):
                 with self.assertRaises(mc.MoneyCraftError) as caught:

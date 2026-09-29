@@ -19,6 +19,7 @@ FIXTURE_DIR = ROOT / "tests" / "fixtures" / "fuyao"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import money_craft as mc  # noqa: E402
+import fuyao_client  # noqa: E402
 
 
 def fixture_bytes(name: str) -> bytes:
@@ -153,7 +154,7 @@ class FuyaoClientTests(unittest.TestCase):
         self.assertEqual(sleeps, [0.5, 1.0])
 
     def test_response_size_limit(self) -> None:
-        opener = FakeOpener([FakeResponse(b"x" * (mc.MAX_RESPONSE_BYTES + 1))])
+        opener = FakeOpener([FakeResponse(b"x" * (fuyao_client.MAX_RESPONSE_BYTES + 1))])
         client = mc.FuyaoClient("secret", opener=opener)
         with self.assertRaises(mc.MoneyCraftError) as caught:
             client.request("snapshot", "/snapshot", {})

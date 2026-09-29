@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from test_provider import FakeOpener, FakeResponse, response
 import money_craft as mc
+import fuyao_client
 
 class FuyaoTransportTests(unittest.TestCase):
     def test_redirect_rejects_https_downgrade(self):
@@ -92,7 +93,7 @@ class FuyaoTransportTests(unittest.TestCase):
                         self.calls+=1;request.timeout=timeout
                         return handler.http_error_302(request,body,302,'redirect',{'location':'https://fixture.invalid/next' if oversized else 'http://fixture.invalid/next'})
                 opener=Opener()
-                with mock.patch.object(mc,'MAX_RESPONSE_BYTES',32),self.assertRaises(mc.MoneyCraftError) as caught:
+                with mock.patch.object(fuyao_client,'MAX_RESPONSE_BYTES',32),self.assertRaises(mc.MoneyCraftError) as caught:
                     mc.FuyaoClient('synthetic',base_url='https://fixture.invalid',opener=opener,sleeper=lambda _:None).request('snapshot','/snapshot',{})
                 self.assertEqual(caught.exception.kind,'response_too_large' if oversized else 'http_error')
                 self.assertEqual(opener.calls,1)
