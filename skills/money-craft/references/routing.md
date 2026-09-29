@@ -15,7 +15,7 @@
 | 判断全球某家公司是否为时代主线或高增长赛道的核心 α | `research + thesis + alpha` | `company-research.md` + `valuation-and-thesis.md` + `high-growth-alpha.md` + 数据证据规则 |
 | 研究全球行业、产业链、国家或主题并寻找 α | `industry/theme + alpha` | `global-investing.md` + `high-growth-alpha.md` + 数据证据规则 |
 | ETF、基金、债券、现金管理、跨币种或组合问题 | `asset/portfolio` | `global-investing.md` + 数据证据规则；涉及具体公司再加载对应公司规则 |
-| 年报、季报、业绩发生了什么变化 | `earnings` | `earnings-review.md` + 数据证据规则 |
+| 年报、季报、业绩发生了什么变化 | `earnings` | `earnings-review.md` + 数据证据规则；运行 earnings CLI 时加 `earnings-tools.md` |
 | 估值、建立投资逻辑、更新原有逻辑 | `thesis` | `valuation-and-thesis.md` + 数据证据规则 |
 | 将已完成的论文更新封存到公司级历史 | `track` | `tracking-workflow.md` + `valuation-and-thesis.md` |
 | 已有基金费用与持仓快照，审计组合费用与暴露 | `portfolio` | `global-investing.md` + `portfolio-audit.md` |
