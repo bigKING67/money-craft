@@ -62,7 +62,8 @@ python3 skills/money-craft/scripts/money_craft.py storage dedupe --root local --
 ```
 
 - 默认 dry-run；只处理 ≥64 KiB、SHA-256 相同、同一设备上的普通文件。克隆后每个路径保留独立 inode、原权限与 mtime，改写其中一份不影响其他副本。
-- sealed revision（只读目录或只读文件）只作为克隆源，从不被替换；已有硬链接的文件、`.working/` 和 `*.staging.*` 进行中目录也不替换。
-- 替换前复核源与目标未变化，并校验克隆内容的 SHA-256；不一致时记为 `changed_during_scan` 并保留原文件。文件系统不支持克隆时返回 `clone_unsupported`，不退回硬链接或复制。
+- sealed revision（只读目录或只读文件）只作为克隆源，从不被替换；非当前用户所有或当前用户不可写的文件、已有硬链接的文件、`.working/` 和 `*.staging.*` 进行中目录也不替换。以 root 运行时同样按权限位判断，不因 root 可写而替换只读目录中的文件。
+- 替换前复核源与目标未变化，并校验克隆内容的 SHA-256；不一致时记为 `changed_during_scan` 并保留原文件。文件系统不支持克隆时回执 `error_kinds` 含 `clone_unsupported` 并立即停止，不退回硬链接或复制。
+- 克隆替换保留目标的权限与 mtime，但扩展属性/ACL 来自克隆源（macOS 会带上源文件的 `com.apple.quarantine` 等），属组按新建文件规则确定；证据文件不依赖这些属性时才适用。Linux `FICLONE` 常量仅适用于 x86/arm。
 - 克隆共享的块对 `stat`/`du` 不可见：节省的空间用 `df` 观察；再次运行会把已克隆的副本重新计入 `duplicate_bytes`（上限值，重复执行无害）。
 - 不要与正在运行的 `research`/`track` 命令并发执行。回执不含绝对路径和文件内容。

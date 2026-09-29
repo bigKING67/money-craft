@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections
+import contextlib
 import ctypes
 import ctypes.util
 import errno
@@ -22,7 +23,7 @@ DEFAULT_MIN_BYTES = 64 * 1024
 MAX_REPORTED_ERRORS = 50
 PREFIX_BYTES = 64 * 1024
 LINUX_FICLONE = 0x40049409
-UNSUPPORTED_ERRNOS = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.EINVAL, errno.ENOTTY}
+UNSUPPORTED_ERRNOS = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.EINVAL, errno.ENOTTY, errno.ENOSYS}
 
 
 class StorageError(Exception):
@@ -52,7 +53,8 @@ def _linux_clone(source: Path, destination: Path) -> None:
             fcntl.ioctl(writer.fileno(), LINUX_FICLONE, reader.fileno())
         except OSError:
             writer.close()
-            destination.unlink()
+            with contextlib.suppress(OSError):  # keep the ioctl errno for classification
+                destination.unlink()
             raise
 
 
@@ -104,12 +106,22 @@ def _prefix_digest(path: Path) -> str:
 
 
 def _replaceable(path: Path, metadata: os.stat_result) -> bool:
-    # Replacing a path swaps its inode: never do that to sealed (read-only) files, read-only
-    # directories, or hard-linked files whose other links would keep the old bytes alive.
+    # Replacing a path swaps its inode: never do that to sealed (read-only) files or directories,
+    # files owned by someone else (the clone would change owner/group), or hard-linked files
+    # whose other links would keep the old bytes alive. Mode bits are checked explicitly because
+    # os.access() is always true for root.
+    try:
+        parent = path.parent.stat()
+    except OSError:
+        return False
+    owner_ok = not hasattr(os, "geteuid") or metadata.st_uid == os.geteuid()
     return (
-        os.access(path.parent, os.W_OK)
-        and bool(metadata.st_mode & 0o222)
+        owner_ok
         and metadata.st_nlink == 1
+        and bool(metadata.st_mode & stat.S_IWUSR)
+        and bool(parent.st_mode & stat.S_IWUSR)
+        and os.access(path, os.W_OK)
+        and os.access(path.parent, os.W_OK)
     )
 
 
@@ -159,6 +171,8 @@ def dedupe(
     not_replaceable = 0
     unsupported = False
     for (_device, size), candidates in sorted(by_size.items()):
+        if unsupported:
+            break
         if len(candidates) < 2:
             continue
         digests: dict[str, list[tuple[Path, os.stat_result]]] = collections.defaultdict(list)
@@ -204,10 +218,10 @@ def dedupe(
                         record(path, "changed_during_scan")
                         continue
                     clone(keeper, temporary)
-                    os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
-                    os.utime(temporary, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
                     if sha256_file(temporary) != digest:
                         raise StorageError("changed_during_scan", "clone does not match hashed content")
+                    os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+                    os.utime(temporary, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
                     os.replace(temporary, path)
                     cloned += 1
                     duplicate_bytes += size
@@ -220,8 +234,10 @@ def dedupe(
                     else:
                         record(path, "local_io_error")
                 finally:
-                    if temporary.exists():
-                        temporary.unlink()
+                    try:
+                        temporary.unlink(missing_ok=True)
+                    except OSError:
+                        record(path, "cleanup_failed")
 
     return {
         "schema": SCHEMA,
@@ -237,5 +253,6 @@ def dedupe(
         # Clone sharing is invisible to stat/du, so previously cloned copies are counted again.
         "duplicate_bytes": duplicate_bytes,
         "error_count": len(error_kinds),
+        "error_kinds": dict(sorted(collections.Counter(error_kinds).items())),
         "errors": errors,
     }
