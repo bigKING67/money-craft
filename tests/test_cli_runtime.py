@@ -48,6 +48,16 @@ class CliRuntimeTests(unittest.TestCase):
                 with mock.patch.object(mc.os,'execve',side_effect=AssertionError('unexpected exec')):
                     mc.maybe_reexec_data_runtime()
 
+    def test_relocated_data_home_without_venv_keeps_current_interpreter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = {key: value for key, value in os.environ.items()
+                   if key not in {'MONEY_CRAFT_DATA_PYTHON', 'MONEY_CRAFT_DATA_RUNTIME_ACTIVE'}}
+            env['MONEY_CRAFT_DATA_HOME'] = str(Path(directory)/'data')
+            result = subprocess.run([sys.executable, str(SCRIPTS/'money_craft.py'), 'self-test', '--json'],
+                                    capture_output=True, text=True, env=env, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(json.loads(result.stdout)['runtime_valid'])
+
     def test_dependency_probe_invalid_encoding_is_diagnostic(self):
         with tempfile.TemporaryDirectory() as directory:
             launcher = Path(directory)/'launcher'

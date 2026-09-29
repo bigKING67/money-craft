@@ -246,10 +246,13 @@ def maybe_reexec_data_runtime() -> None:
     if os.environ.get(DATA_RUNTIME_GUARD) == "1":
         return
     candidate, source = preferred_data_python()
-    if not source.startswith("environment:") and sys.prefix != sys.base_prefix:
+    # Only MONEY_CRAFT_DATA_PYTHON selects an interpreter; a relocated data home without a
+    # venv yet behaves like the default location.
+    explicit = source == f"environment:{DATA_PYTHON_ENV}"
+    if not explicit and sys.prefix != sys.base_prefix:
         return
     if not candidate.is_file() or not os.access(candidate, os.X_OK):
-        if source.startswith("environment:"):
+        if explicit:
             raise MoneyCraftError("invalid_configuration", "explicit data Python must be an executable file", exit_code=EXIT_CONFIG)
         return
     try:
@@ -1447,7 +1450,9 @@ def run_research(args: argparse.Namespace) -> int:
             return 0
         if args.research_command == "collect":
             with research_run.workspace_lock(args.workspace):
-                _root, plan, case, _state = research_run.load_workspace(args.workspace)
+                root, plan, case, _state = research_run.load_workspace(args.workspace)
+                # A sealed run rejects collection regardless of provider configuration.
+                research_run.require_unsealed_workspace(root)
                 adapter = str(plan.get("provider", {}).get("adapter", "fuyao"))
                 if plan.get("provider", {}).get("mode") == "disabled":
                     raise WorkflowError("provider_disabled", "research workspace explicitly disables the structured-data provider")

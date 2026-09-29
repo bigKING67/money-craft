@@ -113,6 +113,8 @@ class SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
                 or original.netloc.lower() != target.netloc.lower()
                 or target.username is not None or target.password is not None):
             raise urllib.error.HTTPError(newurl, code, "cross-host redirect rejected", headers, fp)
+        if code == 308 and sys.version_info < (3, 11):
+            code = 307  # Python 3.10 urllib predates 308; 3.11+ treats 307/308 identically.
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
