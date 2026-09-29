@@ -18,6 +18,10 @@
 | 年报、季报、业绩发生了什么变化 | `earnings` | `earnings-review.md` + 数据证据规则 |
 | 估值、建立投资逻辑、更新原有逻辑 | `thesis` | `valuation-and-thesis.md` + 数据证据规则 |
 | 将已完成的论文更新封存到公司级历史 | `track` | `tracking-workflow.md` + `valuation-and-thesis.md` |
+| 已有基金费用与持仓快照，审计组合费用与暴露 | `portfolio` | `global-investing.md` + `portfolio-audit.md` |
+| 生成或验收最终 HTML/PDF 报告 | `report` | `report-rendering.md`；宿主正式账本另读 `host-render.md` |
+
+完整研究、估值或论文交付前，另读 `research-semantic-review.md` 做语义验收。
 
 用户同时要求多个模式时，按 `screen -> research -> earnings/thesis` 复用已核验事实，不重复抓取同一响应。快速筛选触发硬否决后，只有用户仍明确要求时才继续完整研究。
 
