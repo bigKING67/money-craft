@@ -10,6 +10,7 @@ import math
 import os
 import re
 import socket
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -111,6 +112,8 @@ class SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
                 or original.netloc.lower() != target.netloc.lower()
                 or target.username is not None or target.password is not None):
             raise urllib.error.HTTPError(newurl, code, "unsafe FRED redirect rejected", headers, fp)
+        if code == 308 and sys.version_info < (3, 11):
+            code = 307  # Python 3.10 urllib predates 308; 3.11+ treats 307/308 identically.
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -201,7 +204,7 @@ def _parse_json(raw: bytes, *, secret: str) -> dict[str, Any]:
             parse_float=Decimal,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"invalid constant: {value}")),
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, InvalidOperation) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, InvalidOperation, RecursionError) as exc:
         raise FredAdapterError(
             "malformed_response",
             f"FRED response is not valid UTF-8 JSON: {_sanitize(exc, (secret,))}",
@@ -425,7 +428,7 @@ class FredClient:
             if body:
                 try:
                     error_payload = json.loads(body.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
+                except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
                     error_payload = None
                 if isinstance(error_payload, dict) and isinstance(error_payload.get("error_message"), str):
                     message = _sanitize(error_payload["error_message"], (self._api_key,))
