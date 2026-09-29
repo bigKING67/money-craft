@@ -15,7 +15,7 @@ description: 面向全球市场的证据优先投资研究与理财决策支持�
 - 完整公司研究：[references/company-research.md](references/company-research.md)；它包含确定性研究入口、可恢复运行和完成收据门禁。
 - 全球市场、基金/债券/组合或跨币种理财问题：[references/global-investing.md](references/global-investing.md)；已有基金费用与持仓快照的组合审计：[references/portfolio-audit.md](references/portfolio-audit.md)
 - 行业主题、时代主线、核心资产或高增长 α：[references/high-growth-alpha.md](references/high-growth-alpha.md)；研究具体公司时同时加载完整公司研究和估值规则
-- 财报或业绩解读：[references/earnings-review.md](references/earnings-review.md)
+- 财报或业绩解读：[references/earnings-review.md](references/earnings-review.md)；运行 `earnings` 子命令（更新、前瞻封存/复盘、交叉核验、驱动模型）时再读 [references/earnings-tools.md](references/earnings-tools.md)
 - 估值、建立或更新投资论文：[references/valuation-and-thesis.md](references/valuation-and-thesis.md)
 - 完整研究、估值或论文交付前的语义验收：[references/research-semantic-review.md](references/research-semantic-review.md)
 - 将论文更新封存为公司级跟踪历史：[references/tracking-workflow.md](references/tracking-workflow.md)
