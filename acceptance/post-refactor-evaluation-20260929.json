@@ -37,14 +37,28 @@
       "skill_commit": "1c124ac",
       "result": "FAIL_TIMEOUT",
       "elapsed_seconds": 1200,
-      "notes": "Reached render preview v2; 25 separate financial_rigor.py calculate CLI calls; host-render.md was read."
+      "notes": "Reached render preview v2; 25 separate financial_rigor.py calculate CLI calls; host-render.md was read.",
+      "per_calculation_cli_calls": 26
     },
     {
       "case": "alibaba-hk-full-research-from-empty-workspace",
       "skill_commit": "812e054",
       "result": "FAIL_TIMEOUT",
       "elapsed_seconds": 1200,
-      "notes": "Per-calculation CLI calls 0 (fix effective); render preview reached; 38 commands before research init incl. host ~/.codex/tools help and 6 capture --url-index usage errors (host governance tools, outside this repo)."
+      "notes": "Per-calculation CLI calls 0 (fix effective); render preview reached; 38 commands before research init incl. host ~/.codex/tools help and 6 capture --url-index usage errors (host governance tools, outside this repo).",
+      "per_calculation_cli_calls": 0,
+      "url_index_errors": 6
+    },
+    {
+      "case": "alibaba-hk-full-research-from-empty-workspace",
+      "skill_commit": "0923-frozen-candidate",
+      "purpose": "A/B control: byte-identical 2026-09-23 candidate under 2026-09-29 prompt, interpreter and window",
+      "result": "FAIL_TIMEOUT",
+      "elapsed_seconds": 1200,
+      "per_calculation_cli_calls": 34,
+      "url_index_errors": 7,
+      "report_md_first_written_seconds": 1199,
+      "notes": "Slowest of today's runs; never reached render."
     }
   ],
   "baseline": {
@@ -54,10 +68,11 @@
     "elapsed_seconds": 934.283
   },
   "fix": "Document money_craft.py audit financial|report|reconciliation and a one-call batch receipt pattern (commits d2e4d1b, 812e054).",
-  "conclusion": "Earnings paths verified after the fix. Full autonomous research is UNVERIFIED after trimming: 0/2 within the 1200s window today versus 1/1 on 2026-09-23 near the limit; remaining time sinks are host governance tooling and model variance, not attributable to the reference split from this evidence.",
+  "conclusion": "Earnings paths verified after the fix. The full-research timeouts are not caused by the reference trimming: the byte-identical 2026-09-23 candidate also timed out today and was slower (34 per-calculation CLI calls, report at 1199s) than the trimmed candidate with the calculation fix (0 calls, report at 976s). Remaining time sinks are the 20-minute window (the 2026-09-23 pass took 934s), host governance tool discovery, the undocumented 1-based capture --url-index (fixed in host rules) and model variance.",
   "artifacts_local": [
     "local/skill-evals/20260929-post-refactor-e2e",
     "local/skill-evals/20260929-post-fix-e2e"
   ],
-  "automatic_trading": false
+  "automatic_trading": false,
+  "host_rule_change": "~/.codex/rules/investment.md now states capture --url-index starts at 1 (host config, outside this repo)."
 }
